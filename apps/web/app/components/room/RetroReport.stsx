@@ -1,0 +1,226 @@
+import { GAMES, type MatchReport } from "@brick/game";
+import { useEffect, type ReactNode } from "react";
+import { playSfx } from "../../lib/audio";
+import { GAME_ICON, awardIcon } from "../../lib/icons";
+import { Brick } from "../ui/Brick.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Title } from "../ui/Title.stsx";
+
+const PODIUM = [
+  { place: 2, height: 110, color: "#cbd5e1" },
+  { place: 1, height: 160, color: "#ffcc33" },
+  { place: 3, height: 80, color: "#f4a261" },
+];
+
+/** The end-of-match scorecard: podium, awards, and every game's points. */
+export function RetroReport({
+  report,
+  me,
+  actions,
+  celebrate = true,
+}: {
+  report: MatchReport;
+  me?: string | null;
+  actions?: ReactNode;
+  celebrate?: boolean;
+}) {
+  const byRank = (place: number) => report.players.filter((p) => p.rank === place);
+  const mine = report.players.find((p) => p.id === me);
+  // Every room update (a chat message, say) brings a new `report` object, so celebrate per match instead.
+  const celebration = `${report.code}:${report.endedAt}`;
+  const sound = mine?.rank === 1 ? "win" : mine && mine.id === report.players.at(-1)?.id && report.players.length > 2 ? "lose" : "reveal";
+
+  useEffect(() => {
+    if (!celebrate) return;
+    playSfx(sound);
+    let cancelled = false;
+    import("canvas-confetti").then(({ default: confetti }) => {
+      if (cancelled) return;
+      const colors = ["#00c4b8", "#ff5a4e", "#ffcc33", "#8b6cff", "#5fd068", "#ff7ab6"];
+      confetti({ particleCount: 140, spread: 90, origin: { y: 0.35 }, colors });
+      setTimeout(() => !cancelled && confetti({ particleCount: 80, angle: 60, spread: 70, origin: { x: 0 }, colors }), 400);
+      setTimeout(() => !cancelled && confetti({ particleCount: 80, angle: 120, spread: 70, origin: { x: 1 }, colors }), 700);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // `sound` is left out on purpose: it only matters when a celebration starts.
+  }, [celebrate, celebration]);
+
+  return (
+    <div className="report">
+      <header className="head">
+        <Title as="h1" size="lg">
+          Retro Report
+        </Title>
+        <span className="when">
+          Room {report.code} · {new Date(report.endedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+        </span>
+      </header>
+
+      <div className="podium" aria-label="Podium">
+        {PODIUM.map((step) => {
+          const winners = byRank(step.place);
+          // Ties share a step, so their bricks shrink to fit side by side.
+          const size = winners.length > 1 ? "sm" : step.place === 1 ? "lg" : "md";
+          return (
+            <div key={step.place} className="step">
+              <div className="on-top">
+                {winners.slice(0, 3).map((p, i) => (
+                  <div key={p.id} className="winner" style={{ animationDelay: `${0.3 + (3 - step.place) * 0.35 + i * 0.1}s` }}>
+                    <Brick avatar={p.avatar} size={size} mood={step.place === 1 ? "wow" : "happy"} />
+                    {winners.length === 1 ? (
+                      <>
+                        <span className="w-name">{p.name}</span>
+                        <span className="w-score">{p.total.toLocaleString("en-US")}</span>
+                      </>
+                    ) : null}
+                  </div>
+                ))}
+                {winners.length > 3 ? <span className="more">+{winners.length - 3}</span> : null}
+              </div>
+              {winners.length > 1 ? (
+                <div className="tie">
+                  <span className="tie-names">{winners.map((p) => p.name).join(", ")}</span>
+                  <span className="w-score">
+                    {winners[0]!.total.toLocaleString("en-US")} each
+                  </span>
+                </div>
+              ) : null}
+              <div className="block" style={{ height: step.height, background: step.color }}>
+                {step.place}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {report.awards.length ? (
+        <section aria-labelledby="awards-title" className="awards-wrap">
+          <Title as="h2" size="md" tone="sun">
+            <span id="awards-title">Awards</span>
+          </Title>
+          <ul className="awards">
+            {report.awards.map((a, i) => {
+              const p = report.players.find((x) => x.id === a.playerId);
+              return (
+                <li key={a.id} className="award" style={{ animationDelay: `${1.2 + i * 0.12}s`, rotate: `${((i * 5) % 5) - 2}deg` }}>
+                  <span className="award-icon">
+                    <Icon name={awardIcon(a.id)} />
+                  </span>
+                  <span className="a-title">{a.title}</span>
+                  {p ? (
+                    <span className="a-who">
+                      <Brick avatar={p.avatar} size="xs" /> {p.name}
+                    </span>
+                  ) : null}
+                  <span className="a-desc">{a.description}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+
+      <Panel className="table-wrap">
+        <table className="table">
+          <caption className="sr-only">Points per game</caption>
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">Player</th>
+              {report.games.map((g, i) => (
+                <th key={i} scope="col" title={GAMES[g.gameId].title}>
+                  <Icon name={GAME_ICON[g.gameId]} />
+                  <span className="sr-only">{GAMES[g.gameId].title}</span>
+                </th>
+              ))}
+              <th scope="col">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.players.map((p) => (
+              <tr key={p.id} className={p.id === me ? "row me" : "row"}>
+                <td className="num">{p.rank}</td>
+                <th scope="row" className="who">
+                  <Brick avatar={p.avatar} size="xs" /> {p.name}
+                </th>
+                {report.games.map((g, i) => (
+                  <td key={i} className="num">
+                    {g.points[p.id] ?? "–"}
+                  </td>
+                ))}
+                <td className="num total">{p.total.toLocaleString("en-US")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Panel>
+
+      {actions ? <div className="actions">{actions}</div> : null}
+    </div>
+  );
+}
+
+<style>
+  .report { display: flex; flex-direction: column; gap: 26px; align-items: center; width: 100%; }
+  .head { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .when { font-weight: 900; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; }
+
+  .podium { display: flex; align-items: flex-end; justify-content: center; gap: 12px; padding-top: 20px; }
+  .step { display: flex; flex-direction: column; align-items: center; width: clamp(110px, 18vw, 200px); }
+  .on-top { display: flex; gap: 4px; align-items: flex-end; justify-content: center; max-width: 100%; }
+  .tie { display: flex; flex-direction: column; align-items: center; gap: 2px; margin-top: 6px; text-align: center; animation: land 0.6s 0.6s cubic-bezier(0.2, 1.6, 0.4, 1) backwards; }
+  .tie-names { font-weight: 900; font-size: 14px; line-height: 1.2; background: var(--paper); border: 3px solid var(--ink); border-radius: 14px; padding: 2px 10px; }
+  .more { font-family: var(--font-display); font-size: 18px; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; align-self: center; }
+  .winner { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; animation: land 0.6s cubic-bezier(0.2, 1.6, 0.4, 1) backwards; }
+  .w-name { font-weight: 900; font-size: 15px; background: var(--paper); border: 3px solid var(--ink); border-radius: 999px; padding: 1px 10px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .w-score { font-family: var(--font-display); font-size: 18px; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; }
+  .block {
+    width: 100%;
+    margin-top: 8px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 10px;
+    font-family: var(--font-display);
+    font-size: 44px;
+    border: var(--line) solid var(--ink);
+    border-radius: 16px 16px 0 0;
+    box-shadow: inset -10px 0 0 rgba(0, 0, 0, 0.12);
+    animation: grow 0.6s cubic-bezier(0.2, 1.2, 0.4, 1) backwards;
+    transform-origin: bottom;
+  }
+
+  .awards-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 100%; }
+  .awards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; width: min(1000px, 100%); }
+  .award {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 14px;
+    animation: land 0.5s cubic-bezier(0.2, 1.6, 0.4, 1) backwards;
+  }
+  .award-icon { font-size: 34px; line-height: 1; }
+  .a-title { font-family: var(--font-display); font-size: 20px; line-height: 1.1; }
+  .a-who { display: flex; align-items: center; gap: 6px; font-weight: 900; }
+  .a-desc { font-size: 14px; color: var(--muted); }
+
+  .table-wrap { width: min(1000px, 100%); overflow-x: auto; }
+  .table { width: 100%; border-collapse: collapse; font-size: 16px; }
+  .table th, .table td { padding: 6px 10px; text-align: left; border-bottom: 2px solid #dbe4ee; }
+  .table thead th { font-size: 20px; }
+  .who { display: flex; align-items: center; gap: 8px; font-weight: 900; white-space: nowrap; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .total { font-family: var(--font-display); font-size: 18px; }
+  .me { background: var(--sun-soft); }
+  .actions { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+
+  @keyframes land { from { translate: 0 -80px; opacity: 0; } }
+  @keyframes grow { from { scale: 1 0; } }
+</style>

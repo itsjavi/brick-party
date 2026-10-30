@@ -1,0 +1,96 @@
+import { useEffect, useRef } from "react";
+
+interface TurnstileApi {
+  render(
+    container: HTMLElement,
+    options: {
+      sitekey: string;
+      action?: string;
+      theme?: "light" | "dark" | "auto";
+      callback?: (token: string) => void;
+      "expired-callback"?: () => void;
+      "error-callback"?: () => void;
+    },
+  ): string;
+  reset(widgetId: string): void;
+  remove(widgetId: string): void;
+}
+
+declare global {
+  interface Window {
+    turnstile?: TurnstileApi;
+  }
+}
+
+const SCRIPT_URL = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+let loading: Promise<TurnstileApi> | null = null;
+
+function loadTurnstile(): Promise<TurnstileApi> {
+  loading ??= new Promise((resolve, reject) => {
+    if (window.turnstile) return resolve(window.turnstile);
+    const script = document.createElement("script");
+    script.src = SCRIPT_URL;
+    script.async = true;
+    script.onload = () => (window.turnstile ? resolve(window.turnstile) : reject(new Error("Turnstile didn't load")));
+    script.onerror = () => {
+      loading = null;
+      reject(new Error("Turnstile didn't load"));
+    };
+    document.head.appendChild(script);
+  });
+  return loading;
+}
+
+/**
+ * Cloudflare Turnstile's "are you human" check (DECISION-11). It adds its token to the
+ * surrounding form as `cf-turnstile-response`. Tokens work once, so a new `attempt` gets a
+ * fresh one.
+ */
+export function HumanCheck({
+  siteKey,
+  attempt,
+  onReady,
+}: {
+  siteKey: string;
+  attempt: unknown;
+  onReady: (ready: boolean) => void;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const widget = useRef<string | null>(null);
+  const ready = useRef(onReady);
+  ready.current = onReady;
+
+  useEffect(() => {
+    let cancelled = false;
+    loadTurnstile()
+      .then((turnstile) => {
+        if (cancelled || !box.current) return;
+        widget.current = turnstile.render(box.current, {
+          sitekey: siteKey,
+          action: "create-player",
+          theme: "light",
+          callback: () => ready.current(true),
+          "expired-callback": () => ready.current(false),
+          "error-callback": () => ready.current(false),
+        });
+      })
+      .catch(() => ready.current(false));
+    return () => {
+      cancelled = true;
+      if (widget.current) window.turnstile?.remove(widget.current);
+      widget.current = null;
+    };
+  }, [siteKey]);
+
+  useEffect(() => {
+    if (!widget.current || attempt === undefined) return;
+    window.turnstile?.reset(widget.current);
+    ready.current(false);
+  }, [attempt]);
+
+  return <div ref={box} className="check" />;
+}
+
+<style>
+  .check { display: flex; justify-content: center; min-height: 65px; }
+</style>

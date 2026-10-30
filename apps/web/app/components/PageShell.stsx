@@ -1,0 +1,68 @@
+import type { ReactNode } from "react";
+import { Link } from "react-router";
+import { useMusic } from "../lib/use-music";
+import { AudioControls } from "./ui/AudioControls.stsx";
+import { Stage } from "./ui/Stage.stsx";
+
+/** Layout for the menu pages: a back link, the audio controls, and a centered column. */
+export function PageShell({ children, back = "/" }: { children: ReactNode; back?: string }) {
+  useMusic("lobby");
+  return (
+    <Stage>
+      <header className="top">
+        <Link to={back} className="back">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1b1f3b" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+          Back
+        </Link>
+        <Link to="/" className="logo">
+          BRICK PARTY
+        </Link>
+        <AudioControls />
+      </header>
+      <main className="page">{children}</main>
+    </Stage>
+  );
+}
+
+<style>
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 28px 0; }
+  .back {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 900;
+    font-size: 17px;
+    color: var(--ink);
+    text-decoration: none;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 999px;
+    box-shadow: var(--lift-sm);
+    padding: 8px 16px 8px 10px;
+  }
+  .back:active { translate: 0 3px; box-shadow: 0 2px 0 var(--ink); }
+  .logo {
+    font-family: var(--font-display);
+    font-size: 28px;
+    color: var(--paper);
+    -webkit-text-stroke: 4px var(--ink);
+    paint-order: stroke fill;
+    text-shadow: 0 4px 0 var(--ink);
+    text-decoration: none;
+  }
+  .page {
+    width: min(1040px, 100%);
+    margin: 0 auto;
+    padding: 24px 20px 56px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  @media (width < 700px) {
+    .top { padding: 12px 14px 0; }
+    .logo { display: none; }
+  }
+</style>

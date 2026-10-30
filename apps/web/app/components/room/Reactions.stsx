@@ -1,0 +1,163 @@
+import { REACTIONS, type MatchView, type Reaction } from "@brick/game";
+import { useEffect, useRef } from "react";
+import { playSfx, type SfxName } from "../../lib/audio";
+import type { FloatingReaction } from "../../lib/room";
+import { Brick } from "../ui/Brick.stsx";
+
+export const REACTION_STYLE: Record<Reaction, { label: string; text: string; color: string }> = {
+  lol: { label: "Laughing", text: "LOL", color: "#ffcc33" },
+  wow: { label: "Wow", text: "WOW", color: "#5ec8ff" },
+  plus1: { label: "Plus one", text: "+1", color: "#5fd068" },
+  boo: { label: "Boo", text: "BOO", color: "#ff7ab6" },
+  bot: { label: "Sounds like a bot", text: "BOT", color: "#00c4b8" },
+  tomato: { label: "Throw a tomato", text: "", color: "#ff5a4e" },
+};
+
+const REACTION_SFX: Record<Reaction, SfxName> = {
+  lol: "reactLol",
+  wow: "reactWow",
+  plus1: "reactPlus1",
+  boo: "reactBoo",
+  bot: "reactBot",
+  tomato: "reactTomato",
+};
+
+export function Tomato({ size = 26 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 40 40" width={size} height={size} aria-hidden="true">
+      <circle cx="20" cy="23" r="14" fill="#ff5a4e" stroke="#1b1f3b" strokeWidth="3.5" />
+      <path d="M13 11 L20 15 L27 11 L23 17 L17 17 Z" fill="#5fd068" stroke="#1b1f3b" strokeWidth="2.5" strokeLinejoin="round" />
+      <ellipse cx="14" cy="20" rx="3" ry="4" fill="#ffffff" opacity="0.6" />
+    </svg>
+  );
+}
+
+/** The row of reaction buttons. Throttled so mashing doesn't spam the room. */
+export function ReactionBar({ onReact }: { onReact: (emoji: Reaction) => void }) {
+  const last = useRef(0);
+  return (
+    <div className="bar" role="group" aria-label="Reactions">
+      {REACTIONS.map((r) => (
+        <button
+          key={r}
+          type="button"
+          className="react"
+          style={{ "--c": REACTION_STYLE[r].color }}
+          aria-label={REACTION_STYLE[r].label}
+          title={REACTION_STYLE[r].label}
+          onClick={() => {
+            const now = Date.now();
+            if (now - last.current < 250) return;
+            last.current = now;
+            onReact(r);
+          }}
+        >
+          {r === "tomato" ? <Tomato /> : REACTION_STYLE[r].text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Reactions from everyone float up the screen for a couple of seconds, each with its own sound.
+ * Reactions aimed at something (a tomato at an answer) only play their sound; the target shows them.
+ */
+export function ReactionLayer({
+  reactions,
+  view,
+  onDone,
+}: {
+  reactions: FloatingReaction[];
+  view: MatchView;
+  onDone: (id: number) => void;
+}) {
+  const seen = useRef(new Set<number>());
+  useEffect(() => {
+    for (const r of reactions) {
+      if (seen.current.has(r.id)) continue;
+      seen.current.add(r.id);
+      playSfx(REACTION_SFX[r.emoji]);
+      setTimeout(() => onDone(r.id), 2400);
+    }
+  }, [reactions, onDone]);
+
+  return (
+    <div className="layer" aria-hidden="true">
+      {reactions.filter((r) => !r.target).map((r) => {
+        const member = view.members.find((m) => m.id === r.from);
+        const x = 8 + ((r.id * 37) % 84);
+        return (
+          <div
+            key={r.id}
+            className={r.emoji === "tomato" ? "float splat" : "float"}
+            style={{ left: `${x}%`, "--c": REACTION_STYLE[r.emoji].color }}
+          >
+            {member ? <Brick avatar={member.avatar} size="xs" /> : null}
+            <span className="bubble">{r.emoji === "tomato" ? <Tomato size={34} /> : REACTION_STYLE[r.emoji].text}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+<style>
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; }
+  .react {
+    width: 50px;
+    height: 50px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--c);
+    border: 3px solid var(--ink);
+    box-shadow: 0 4px 0 var(--ink);
+    font-family: var(--font-display);
+    font-size: 14px;
+    color: var(--ink);
+    cursor: pointer;
+    transition: transform 0.08s;
+  }
+  .react:hover { transform: translateY(-3px) rotate(-6deg); }
+  .react:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+
+  .layer { position: fixed; inset: 0; pointer-events: none; z-index: 40; overflow: hidden; }
+  .float {
+    position: absolute;
+    bottom: 90px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    animation: rise 2.4s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  }
+  .bubble {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 54px;
+    height: 54px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: var(--c);
+    border: var(--line) solid var(--ink);
+    box-shadow: 0 5px 0 var(--ink);
+    font-family: var(--font-display);
+    font-size: 20px;
+  }
+  .splat { animation: lob 2.4s cubic-bezier(0.3, 0.6, 0.4, 1) forwards; }
+
+  @keyframes rise {
+    0% { translate: 0 40px; scale: 0.4; opacity: 0; }
+    15% { translate: 0 0; scale: 1.15; opacity: 1; }
+    75% { opacity: 1; }
+    100% { translate: 0 -380px; scale: 0.9; opacity: 0; rotate: 8deg; }
+  }
+  @keyframes lob {
+    0% { translate: 0 60px; scale: 0.5; opacity: 0; }
+    40% { translate: 0 -320px; scale: 1.4; opacity: 1; rotate: 200deg; }
+    55% { translate: 0 -300px; scale: 2.2 1.2; rotate: 200deg; }
+    100% { translate: 0 -260px; scale: 2.4 1; opacity: 0; rotate: 200deg; }
+  }
+</style>

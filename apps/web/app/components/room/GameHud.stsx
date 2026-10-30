@@ -1,0 +1,98 @@
+import { GAMES, type GameId } from "@brick/game";
+import type { ReactNode } from "react";
+import { GAME_STYLE } from "../games/types";
+import { RulesButton } from "./Rules.stsx";
+import { Timer } from "../ui/Timer.stsx";
+import { Title } from "../ui/Title.stsx";
+
+/** The strip above every game: which game and round, the call to action, the clock, your score. */
+export function GameHud({
+  gameId,
+  round,
+  banner,
+  endsAt,
+  score,
+  ticks = true,
+}: {
+  gameId: GameId;
+  round: string;
+  banner: ReactNode;
+  endsAt: number | null;
+  score: number;
+  ticks?: boolean;
+}) {
+  return (
+    <div className="hud">
+      <div className="badge" style={{ "--game": GAME_STYLE[gameId].color }}>
+        <span className="game-title">{GAMES[gameId].title}</span>
+        <span className="round">{round}</span>
+      </div>
+      <div className="banner" aria-live="polite">
+        <Title as="p" size="md" tone="sun" key={String(banner)} className="banner-text">
+          {banner}
+        </Title>
+      </div>
+      <RulesButton gameId={gameId} />
+      <Timer endsAt={endsAt} ticks={ticks} />
+      <div className="score">
+        <span className="score-label">Score</span>
+        <span className="score-value">{score.toLocaleString("en-US")}</span>
+      </div>
+    </div>
+  );
+}
+
+<style>
+  .hud { display: flex; align-items: center; gap: 16px; }
+  .badge {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--game);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm), inset -8px -8px 0 rgba(0, 0, 0, 0.12);
+    padding: 8px 14px;
+  }
+  .game-title {
+    font-family: var(--font-display);
+    font-size: 22px;
+    color: var(--paper);
+    -webkit-text-stroke: 3px var(--ink);
+    paint-order: stroke fill;
+    white-space: nowrap;
+  }
+  .round {
+    font-weight: 900;
+    font-size: 14px;
+    white-space: nowrap;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 2px 10px;
+  }
+  .banner { flex-grow: 1; display: flex; justify-content: center; min-width: 0; text-align: center; }
+  .banner-text { animation: slam 0.4s cubic-bezier(0.2, 1.8, 0.4, 1); }
+  .score {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 4px 14px 6px;
+  }
+  .score-label { font-weight: 900; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .score-value { font-family: var(--font-display); font-size: 26px; line-height: 1; }
+
+  @keyframes slam {
+    from { scale: 1.6; opacity: 0; }
+  }
+
+  @media (width < 900px) {
+    .hud { flex-wrap: wrap; gap: 10px; }
+    .banner { order: 5; flex-basis: 100%; }
+    .game-title { font-size: 18px; }
+  }
+</style>

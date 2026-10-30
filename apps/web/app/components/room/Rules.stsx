@@ -1,0 +1,183 @@
+import { GAMES, type GameId } from "@brick/game";
+import { useEffect, useRef, useState } from "react";
+import { playSfx } from "../../lib/audio";
+import { GAME_ICON } from "../../lib/icons";
+import { GAME_STYLE } from "../games/types";
+import { Button } from "../ui/Button.stsx";
+import { Icon } from "../ui/Icon.stsx";
+
+/** A game's rules as numbered step cards. */
+export function RulesSteps({ gameId, stagger = false }: { gameId: GameId; stagger?: boolean }) {
+  return (
+    <ol className="steps" style={{ "--game": GAME_STYLE[gameId].color }}>
+      {GAMES[gameId].rules.map((rule, i) => (
+        <li key={i} className={stagger ? "step enter" : "step"} style={{ animationDelay: `${0.25 + i * 0.35}s` }}>
+          <span className="num" aria-hidden="true">
+            {i + 1}
+          </span>
+          <span className="rule">{rule}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** "How to play" button: a round "?" in the game header, or a text button with `label`. */
+export function RulesButton({ gameId, label }: { gameId: GameId; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const dialog = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const el = dialog.current;
+    if (!el) return;
+    if (open && !el.open) el.showModal();
+    if (!open && el.open) el.close();
+  }, [open]);
+
+  return (
+    <>
+      <button
+        type="button"
+        className={label ? "help-text" : "help"}
+        aria-label={label ? `${label}: ${GAMES[gameId].title}` : "How to play"}
+        title="How to play"
+        onClick={() => {
+          playSfx("pop");
+          setOpen(true);
+        }}
+      >
+        {label ?? "?"}
+      </button>
+      <dialog ref={dialog} className="dialog" aria-labelledby="rules-title" onClose={() => setOpen(false)}>
+        <div className="sheet">
+          <div className="sheet-head">
+            <span className="tile" style={{ background: GAME_STYLE[gameId].color }} aria-hidden="true">
+              <Icon name={GAME_ICON[gameId]} />
+            </span>
+            <div>
+              <span className="kicker">How to play</span>
+              <h2 id="rules-title" className="name">
+                {GAMES[gameId].title}
+              </h2>
+            </div>
+          </div>
+          <RulesSteps gameId={gameId} />
+          <Button size="lg" onClick={() => setOpen(false)} autoFocus>
+            {label ? "Got it" : "Back to the game"}
+          </Button>
+        </div>
+      </dialog>
+    </>
+  );
+}
+
+<style>
+  .steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 16px;
+    width: 100%;
+  }
+  .step {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 26px 16px 16px;
+    font-size: 18px;
+    line-height: 1.3;
+  }
+  .enter { animation: deal 0.5s cubic-bezier(0.2, 1.5, 0.4, 1) backwards; }
+  .num {
+    position: absolute;
+    top: -18px;
+    left: 14px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    font-size: 22px;
+    color: var(--paper);
+    -webkit-text-stroke: 3px var(--ink);
+    paint-order: stroke fill;
+    background: var(--game);
+    border: 3px solid var(--ink);
+    border-radius: 12px;
+    box-shadow: 0 3px 0 var(--ink);
+  }
+
+  .help {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    font-family: var(--font-display);
+    font-size: 24px;
+    color: var(--ink);
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 50%;
+    box-shadow: var(--lift-sm);
+    cursor: pointer;
+  }
+  .help:active { translate: 0 3px; box-shadow: 0 2px 0 var(--ink); }
+  .help-text {
+    font-family: var(--font-display);
+    font-size: 16px;
+    color: var(--ink);
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  .help-text:active { translate: 0 3px; box-shadow: 0 1px 0 var(--ink); }
+
+  .dialog {
+    width: min(860px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    padding: 0;
+    border: none;
+    background: transparent;
+    overflow: visible;
+  }
+  .dialog::backdrop { background: rgba(27, 31, 59, 0.55); }
+  .sheet {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 26px;
+    background: var(--mist);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 26px 28px 30px;
+    animation: pop 0.3s cubic-bezier(0.2, 1.6, 0.4, 1);
+  }
+  .sheet-head { display: flex; align-items: center; gap: 16px; align-self: flex-start; }
+  .tile {
+    width: 64px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    border: var(--line) solid var(--ink);
+    border-radius: 18px;
+    box-shadow: inset -6px -6px 0 rgba(0, 0, 0, 0.14);
+  }
+  .kicker { font-weight: 900; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--coral-ink); }
+  .name { font-family: var(--font-display); font-weight: 400; font-size: 32px; line-height: 1.05; }
+
+  @keyframes deal { from { translate: 0 60px; opacity: 0; scale: 0.85; } }
+  @keyframes pop { from { scale: 0.85; opacity: 0; } }
+</style>

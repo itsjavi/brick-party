@@ -1,0 +1,319 @@
+import type { Avatar, AvatarInput } from "@brick/game";
+import { AVATAR_HEX } from "../../lib/avatar";
+
+const SIZES = { xs: 34, sm: 52, md: 84, lg: 120, xl: 168 } as const;
+/** Which studs each shape has on top. */
+const STUDS: Record<Avatar["shape"], ("left" | "mid" | "right")[]> = {
+  brick: ["left", "right"],
+  round: ["mid"],
+  triple: ["left", "mid", "right"],
+  tile: [],
+  jelly: ["left", "right"],
+  slim: ["mid"],
+};
+
+export type BrickMood = "happy" | "wow" | "sad" | "sleepy" | "sly";
+
+/** A player's avatar: a toy brick of some shape, with a face and an optional hat. */
+export function Brick({
+  avatar,
+  size = "md",
+  mood = "happy",
+  tilt = 0,
+  bounce = false,
+  className,
+}: {
+  avatar: AvatarInput;
+  size?: keyof typeof SIZES;
+  mood?: BrickMood;
+  tilt?: number;
+  bounce?: boolean;
+  className?: string;
+}) {
+  // Reports saved before faces and shapes existed keep their avatars as they were.
+  const face = avatar.face ?? "classic";
+  const shape = avatar.shape ?? "brick";
+  return (
+    <span
+      className={["brick", shape, bounce ? "bounce" : "", className ?? ""].join(" ")}
+      style={{ "--brick": AVATAR_HEX[avatar.color], fontSize: `${SIZES[size] / 10}px`, rotate: `${tilt}deg` }}
+      aria-hidden="true"
+    >
+      {STUDS[shape].map((at) => (
+        <span key={at} className={`stud ${at}`} />
+      ))}
+      <span className="body">
+        {face === "shades" ? null : face === "cyclops" ? (
+          <span className={`eye c ${mood}`} />
+        ) : (
+          <>
+            <span className={`eye l ${mood}`} />
+            <span className={`eye r ${mood}`} />
+          </>
+        )}
+        <span className={`mouth ${mood}`} />
+        <Features face={face} />
+      </span>
+      {avatar.hat !== "none" ? <Hat hat={avatar.hat} /> : null}
+    </span>
+  );
+}
+
+/** What a face adds on top of the eyes and mouth, which follow the mood. */
+function Features({ face }: { face: Avatar["face"] }) {
+  switch (face) {
+    case "blush":
+      return (
+        <>
+          <span className="cheek l" />
+          <span className="cheek r" />
+        </>
+      );
+    case "freckles":
+      return (
+        <>
+          <span className="freckles l" />
+          <span className="freckles r" />
+        </>
+      );
+    case "glasses":
+      return (
+        <>
+          <span className="lens l" />
+          <span className="lens r" />
+          <span className="bridge" />
+        </>
+      );
+    case "shades":
+      return <span className="shades" />;
+    case "mustache":
+      return (
+        <>
+          <span className="stache l" />
+          <span className="stache r" />
+        </>
+      );
+    case "brows":
+      return (
+        <>
+          <span className="brow l" />
+          <span className="brow r" />
+        </>
+      );
+    default:
+      return null;
+  }
+}
+
+function Hat({ hat }: { hat: Exclude<Avatar["hat"], "none"> }) {
+  const ink = "#1b1f3b";
+  switch (hat) {
+    case "cap":
+      return (
+        <svg className="hat" viewBox="0 0 100 50">
+          <path d="M22 44 C 22 10, 74 6, 78 44 Z" fill="#ff5a4e" stroke={ink} strokeWidth="6" strokeLinejoin="round" />
+          <path d="M70 42 L 98 44 L 96 50 L 66 48 Z" fill="#ff5a4e" stroke={ink} strokeWidth="6" strokeLinejoin="round" />
+          <circle cx="50" cy="12" r="5" fill={ink} />
+        </svg>
+      );
+    case "crown":
+      return (
+        <svg className="hat" viewBox="0 0 100 50">
+          <path d="M22 46 L 22 12 L 38 28 L 50 6 L 62 28 L 78 12 L 78 46 Z" fill="#ffcc33" stroke={ink} strokeWidth="6" strokeLinejoin="round" />
+          <circle cx="50" cy="34" r="5" fill="#ff5a4e" stroke={ink} strokeWidth="3" />
+        </svg>
+      );
+    case "party":
+      return (
+        <svg className="hat tall" viewBox="0 0 100 70">
+          <path d="M30 66 L 50 10 L 70 66 Z" fill="#8b6cff" stroke={ink} strokeWidth="6" strokeLinejoin="round" />
+          <path d="M40 40 L 60 40 M 35 54 L 65 54" stroke="#ffcc33" strokeWidth="6" strokeLinecap="round" />
+          <circle cx="50" cy="9" r="8" fill="#ffcc33" stroke={ink} strokeWidth="5" />
+        </svg>
+      );
+    case "tophat":
+      return (
+        <svg className="hat tall" viewBox="0 0 100 70">
+          <rect x="32" y="6" width="36" height="52" rx="4" fill={ink} />
+          <rect x="32" y="40" width="36" height="9" fill="#ff5a4e" />
+          <rect x="18" y="56" width="64" height="10" rx="5" fill={ink} />
+        </svg>
+      );
+    case "beanie":
+      return (
+        <svg className="hat" viewBox="0 0 100 56">
+          <path d="M20 46 C 20 14, 80 14, 80 46 Z" fill="#00c4b8" stroke={ink} strokeWidth="6" strokeLinejoin="round" />
+          <rect x="16" y="40" width="68" height="14" rx="6" fill="#5fd068" stroke={ink} strokeWidth="5" />
+          <circle cx="50" cy="12" r="9" fill="#ffffff" stroke={ink} strokeWidth="5" />
+        </svg>
+      );
+    case "headset":
+      return (
+        <svg className="hat wide" viewBox="0 0 140 70">
+          <path d="M16 66 C 16 6, 124 6, 124 66" fill="none" stroke={ink} strokeWidth="8" strokeLinecap="round" />
+          <rect x="4" y="44" width="22" height="26" rx="8" fill="#8b6cff" stroke={ink} strokeWidth="5" />
+          <rect x="114" y="44" width="22" height="26" rx="8" fill="#8b6cff" stroke={ink} strokeWidth="5" />
+        </svg>
+      );
+    case "halo":
+      return (
+        <svg className="hat halo" viewBox="0 0 100 30">
+          <ellipse cx="50" cy="15" rx="34" ry="9" fill="none" stroke="#ffcc33" strokeWidth="7" />
+          <ellipse cx="50" cy="15" rx="34" ry="9" fill="none" stroke={ink} strokeWidth="2" />
+        </svg>
+      );
+  }
+}
+
+<style>
+  .brick {
+    position: relative;
+    display: inline-block;
+    flex-shrink: 0;
+    width: 10em;
+    height: 7.2em;
+    margin-top: 1.4em;
+  }
+  .bounce { animation: hop 1.8s ease-in-out infinite; }
+  .stud {
+    position: absolute;
+    top: -1.3em;
+    width: 2.5em;
+    height: 1.5em;
+    background: var(--brick);
+    border: clamp(2px, 0.38em, 5px) solid var(--ink);
+    border-bottom: none;
+    border-radius: 0.8em 0.8em 0 0;
+  }
+  .left { left: 1.5em; }
+  .right { right: 1.5em; }
+  .mid { left: 50%; translate: -50% 0; width: 3em; }
+  .triple .stud { width: 2em; }
+  .triple .left { left: 1em; }
+  .triple .right { right: 1em; }
+  .body {
+    position: absolute;
+    inset: 0;
+    background: var(--brick);
+    border: clamp(2px, 0.38em, 5px) solid var(--ink);
+    border-radius: 1.5em;
+    box-shadow: inset -0.85em -0.85em 0 rgba(0, 0, 0, 0.14);
+  }
+  .eye {
+    position: absolute;
+    top: 1.9em;
+    width: 1.25em;
+    height: 1.75em;
+    background: var(--ink);
+    border-radius: 50%;
+    transition: height 0.2s, top 0.2s;
+  }
+  .eye.l { left: 2.6em; }
+  .eye.r { right: 2.6em; }
+  .eye.wow { height: 2.1em; width: 1.5em; top: 1.6em; }
+  .eye.sleepy, .eye.sly { height: 0.45em; top: 2.6em; border-radius: 0.3em; }
+  .eye.sad { top: 2.3em; }
+  .mouth {
+    position: absolute;
+    left: 50%;
+    translate: -50% 0;
+    top: 4.15em;
+    width: 2.3em;
+    height: 0.95em;
+    border-bottom: 0.38em solid var(--ink);
+    border-radius: 0 0 1.4em 1.4em;
+  }
+  .mouth.wow { width: 1.2em; height: 1.2em; top: 4em; border: 0.38em solid var(--ink); border-radius: 50%; }
+  .mouth.sad { top: 4.6em; border-bottom: none; border-top: 0.38em solid var(--ink); border-radius: 1.4em 1.4em 0 0; }
+  .mouth.sleepy { width: 1.4em; height: 0; border-bottom-width: 0.3em; top: 4.6em; }
+  .mouth.sly { width: 2.2em; translate: -40% 0; rotate: -8deg; }
+
+  /* Shapes: each keeps the classic brick's height, so rows of bricks line up. */
+  .round .body { border-radius: 3.6em; }
+  .tile .body { border-radius: 1em; }
+  .jelly .body { border-radius: 46% 54% 42% 58% / 58% 50% 50% 42%; }
+  .slim { width: 7.6em; }
+  .slim .eye.l { left: 1.8em; }
+  .slim .eye.r { right: 1.8em; }
+  .slim .mid { width: 2.6em; }
+
+  /* Faces. */
+  .eye.c { left: 50%; translate: -50% 0; width: 1.9em; height: 2.3em; top: 1.6em; }
+  .eye.c.wow { width: 2.3em; height: 2.6em; top: 1.4em; }
+  .eye.c.sleepy, .eye.c.sly { width: 1.9em; height: 0.5em; top: 2.6em; }
+  .eye.c.sad { top: 2em; }
+  .cheek {
+    position: absolute;
+    top: 3.75em;
+    width: 1.5em;
+    height: 0.8em;
+    background: rgba(255, 70, 120, 0.45);
+    border-radius: 50%;
+  }
+  .cheek.l { left: 1.25em; }
+  .cheek.r { right: 1.25em; }
+  .freckles {
+    position: absolute;
+    top: 3.75em;
+    width: 0.3em;
+    height: 0.3em;
+    background: rgba(27, 31, 59, 0.5);
+    border-radius: 50%;
+    box-shadow: 0.55em 0.15em 0 rgba(27, 31, 59, 0.5), 0.2em 0.55em 0 rgba(27, 31, 59, 0.5);
+  }
+  .freckles.l { left: 1.5em; }
+  .freckles.r { right: 2.05em; }
+  .lens {
+    position: absolute;
+    top: 1.55em;
+    width: 2.45em;
+    height: 2.45em;
+    border: 0.32em solid var(--ink);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.25);
+  }
+  .lens.l { left: 2em; }
+  .lens.r { right: 2em; }
+  .bridge { position: absolute; top: 2.55em; left: 50%; translate: -50% 0; width: 1.3em; height: 0.32em; background: var(--ink); }
+  .shades {
+    position: absolute;
+    top: 1.65em;
+    left: 1.6em;
+    right: 1.6em;
+    height: 1.55em;
+    background: linear-gradient(160deg, transparent 18%, rgba(255, 255, 255, 0.35) 18% 27%, transparent 27%), var(--ink);
+    border-radius: 0.4em 0.4em 1.1em 1.1em;
+  }
+  .stache {
+    position: absolute;
+    top: 3.45em;
+    width: 1.6em;
+    height: 0.75em;
+    background: var(--ink);
+  }
+  .stache.l { right: 50%; border-radius: 1em 0.2em 0.3em 1em; rotate: -10deg; transform-origin: right center; }
+  .stache.r { left: 50%; border-radius: 0.2em 1em 1em 0.3em; rotate: 10deg; transform-origin: left center; }
+  .brow { position: absolute; top: 1.15em; width: 1.7em; height: 0.42em; background: var(--ink); border-radius: 0.3em; }
+  .brow.l { left: 2.35em; rotate: 12deg; }
+  .brow.r { right: 2.35em; rotate: -12deg; }
+  .hat {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 0.4em);
+    width: 6.4em;
+    translate: -50% 0;
+  }
+  .tall { width: 5.6em; bottom: calc(100% + 0.2em); }
+  .wide { width: 12em; bottom: auto; top: -3.2em; }
+  .halo { width: 7em; bottom: calc(100% + 1.4em); animation: hover 2.4s ease-in-out infinite; }
+
+  @keyframes hop {
+    0%, 100% { translate: 0 0; }
+    40% { translate: 0 -0.9em; }
+    55% { translate: 0 0; }
+  }
+  @keyframes hover {
+    0%, 100% { translate: -50% 0; }
+    50% { translate: -50% -0.35em; }
+  }
+</style>

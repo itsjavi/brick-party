@@ -1,0 +1,70 @@
+import type { MatchView } from "@brick/game";
+import { Brick } from "../ui/Brick.stsx";
+
+/** Points earned so far in the game in progress. Every game's view carries a `points` map. */
+function livePoints(view: MatchView): Record<string, number> {
+  const points = (view.game?.view as { points?: Record<string, number> } | undefined)?.points;
+  return points ?? {};
+}
+
+/** Everyone in the room along the bottom, with live scores. */
+export function PlayerStrip({ view }: { view: MatchView }) {
+  const live = livePoints(view);
+  const score = (id: string, total: number) => total + (live[id] ?? 0);
+  const top = Math.max(0, ...view.members.map((m) => score(m.id, m.score)));
+  return (
+    <ul className="strip" aria-label="Players">
+      {view.members.map((m) => (
+        <li
+          key={m.id}
+          className={["chip", m.id === view.you ? "me" : "", m.status === "away" ? "away" : ""].join(" ")}
+          title={m.status === "away" ? `${m.name} is reconnecting` : m.name}
+        >
+          <Brick
+            avatar={m.avatar}
+            size="xs"
+            mood={m.status === "away" ? "sleepy" : top > 0 && score(m.id, m.score) === top ? "sly" : "happy"}
+          />
+          <span className="text">
+            <span className="name">
+              {m.name}
+              {m.id === view.hostId ? <span className="host"> · host</span> : null}
+            </span>
+            <span className="pts">{score(m.id, m.score).toLocaleString("en-US")}</span>
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+<style>
+  .strip {
+    list-style: none;
+    margin: 0;
+    padding: 4px 2px 8px;
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    min-width: 0;
+    scrollbar-width: thin;
+  }
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 0 14px 4px 8px;
+    transition: opacity 0.3s;
+  }
+  .me { background: var(--sun-soft); }
+  .away { opacity: 0.5; }
+  .text { display: flex; flex-direction: column; line-height: 1.1; }
+  .name { font-weight: 900; font-size: 14px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .host { color: var(--muted); font-size: 12px; }
+  .pts { font-family: var(--font-display); font-size: 16px; }
+</style>

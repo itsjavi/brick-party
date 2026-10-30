@@ -1,0 +1,52 @@
+import { useCountdown } from "../../lib/clock";
+
+/** Countdown ring. Ticks in the last five seconds when `ticks` is on. */
+export function Timer({ endsAt, size = 84, ticks = true }: { endsAt: number | null; size?: number; ticks?: boolean }) {
+  const { seconds, fraction } = useCountdown(endsAt, { ticks });
+  const r = 28;
+  const circumference = 2 * Math.PI * r;
+  const urgent = seconds <= 5 && endsAt !== null;
+  return (
+    <div className={urgent ? "timer urgent" : "timer"} style={{ width: size, height: size }} role="timer" aria-label={`${seconds} seconds left`}>
+      <svg viewBox="0 0 86 86" width={size} height={size} aria-hidden="true">
+        <circle cx="43" cy="43" r="37" fill="#ffffff" stroke="#1b1f3b" strokeWidth="5" />
+        <circle cx="43" cy="43" r={r} fill="none" stroke="#ffe7a3" strokeWidth="10" />
+        <circle
+          className="arc"
+          cx="43"
+          cy="43"
+          r={r}
+          fill="none"
+          strokeWidth="10"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - fraction)}
+          transform="rotate(-90 43 43)"
+        />
+      </svg>
+      <span className="num" style={{ fontSize: size * 0.36 }}>
+        {endsAt ? seconds : "–"}
+      </span>
+    </div>
+  );
+}
+
+<style>
+  .timer { position: relative; flex-shrink: 0; }
+  .arc { stroke: var(--teal); transition: stroke-dashoffset 0.2s linear, stroke 0.3s; }
+  .num {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    line-height: 1;
+  }
+  .urgent .arc { stroke: var(--coral); }
+  .urgent .num { color: var(--coral-ink); animation: throb 1s ease-in-out infinite; }
+  @keyframes throb {
+    0%, 100% { scale: 1; }
+    50% { scale: 1.18; }
+  }
+</style>

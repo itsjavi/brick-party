@@ -1,0 +1,45 @@
+import type { InputHTMLAttributes, ReactNode } from "react";
+
+/** A labelled chunky text input. */
+export function Field({
+  label,
+  hideLabel = false,
+  hint,
+  error,
+  className,
+  ...input
+}: InputHTMLAttributes<HTMLInputElement> & {
+  label: ReactNode;
+  hideLabel?: boolean;
+  hint?: ReactNode;
+  error?: ReactNode;
+}) {
+  return (
+    <label className={["field", className ?? ""].join(" ")}>
+      <span className={hideLabel ? "sr-only" : "label"}>{label}</span>
+      <input {...input} className="input" aria-invalid={error ? true : undefined} />
+      {error ? <span className="error">{error}</span> : hint ? <span className="hint">{hint}</span> : null}
+    </label>
+  );
+}
+
+<style>
+  .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .label { font-weight: 900; font-size: 16px; }
+  .input {
+    width: 100%;
+    font-family: var(--font-body);
+    font-weight: 800;
+    font-size: 20px;
+    color: var(--ink);
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-sm);
+    box-shadow: inset 0 4px 0 rgba(27, 31, 59, 0.08);
+    padding: 10px 14px;
+  }
+  .input::placeholder { color: #8a94a6; }
+  .input:focus { outline: none; border-color: var(--teal-ink); box-shadow: 0 0 0 4px var(--sun); }
+  .hint { font-size: 14px; color: var(--muted); }
+  .error { font-size: 14px; color: #b42318; font-weight: 900; }
+</style>

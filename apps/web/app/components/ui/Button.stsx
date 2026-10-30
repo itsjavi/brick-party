@@ -1,0 +1,77 @@
+import type { ButtonHTMLAttributes } from "react";
+import { playSfx } from "../../lib/audio";
+
+export type ButtonTone = "sun" | "paper" | "teal" | "coral" | "grape" | "lime";
+
+/** The chunky, pressable toy button. Plays the click sound unless `quiet`. */
+export function Button({
+  tone = "sun",
+  size = "md",
+  quiet = false,
+  className,
+  onClick,
+  type = "button",
+  ...rest
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  tone?: ButtonTone;
+  size?: "sm" | "md" | "lg" | "xl";
+  quiet?: boolean;
+}) {
+  return (
+    <button
+      {...rest}
+      type={type}
+      className={["btn", `tone-${tone}`, `size-${size}`, className ?? ""].join(" ")}
+      onClick={(event) => {
+        if (!quiet) playSfx("click");
+        onClick?.(event);
+      }}
+    />
+  );
+}
+
+<style>
+  .btn {
+    --bg: var(--sun);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45em;
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: 0.5px;
+    line-height: 1.05;
+    color: var(--ink);
+    background: var(--bg);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: 0 6px 0 var(--ink);
+    cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.08s ease, background-color 0.15s ease;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 0 var(--ink); }
+  .btn:active:not(:disabled) { transform: translateY(5px); box-shadow: 0 1px 0 var(--ink); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .tone-sun { --bg: var(--sun); }
+  .tone-paper { --bg: var(--paper); }
+  .tone-teal { --bg: var(--teal); }
+  .tone-coral { --bg: var(--coral); }
+  .tone-grape { --bg: var(--grape); }
+  .tone-lime { --bg: var(--lime); }
+
+  .size-sm { font-size: 16px; padding: 7px 14px; border-radius: var(--radius-sm); box-shadow: 0 4px 0 var(--ink); }
+  .size-md { font-size: 20px; padding: 10px 20px; }
+  .size-lg { font-size: 28px; padding: 14px 32px; border-radius: 22px; }
+  .size-xl {
+    font-size: 36px;
+    padding: 18px 44px;
+    border-width: 5px;
+    border-radius: 24px;
+    box-shadow: 0 11px 0 var(--ink);
+  }
+  .size-xl:hover:not(:disabled) { box-shadow: 0 13px 0 var(--ink); }
+  .size-xl:active:not(:disabled) { transform: translateY(9px); box-shadow: 0 2px 0 var(--ink); }
+</style>

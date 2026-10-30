@@ -1,0 +1,91 @@
+import { useEffect, useState } from "react";
+import { playSfx } from "../../lib/audio";
+import { rememberKey } from "../../lib/recovery-key";
+import { Button } from "../ui/Button.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Title } from "../ui/Title.stsx";
+
+/** Shows a freshly issued recovery key once, and keeps a copy on this device. */
+export function KeyReveal({ recoveryKey, onDone }: { recoveryKey: string; onDone: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    rememberKey(recoveryKey);
+    playSfx("win");
+  }, [recoveryKey]);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(recoveryKey);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="backdrop" role="dialog" aria-modal="true" aria-labelledby="key-title">
+      <Panel pad="lg" className="card">
+        <Title as="h2" size="md" tone="sun" className="heading">
+          <span id="key-title">Your brick is ready!</span>
+        </Title>
+        <p className="lead">
+          This is your recovery key. Paste it on another browser to get your brick, scores and awards back.
+        </p>
+        <output className="key" aria-label="Recovery key">
+          {recoveryKey}
+        </output>
+        <div className="row">
+          <Button tone="paper" onClick={copy}>
+            {copied ? "Copied!" : "Copy key"}
+          </Button>
+          <Button tone="sun" size="lg" onClick={onDone} autoFocus>
+            Got it, let's play
+          </Button>
+        </div>
+        <p className="small">It's also saved on this device. You can see it again on your brick's page.</p>
+      </Panel>
+    </div>
+  );
+}
+
+<style>
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(27, 31, 59, 0.55);
+    animation: fade 0.2s ease-out;
+  }
+  .card {
+    width: min(560px, 100%);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    text-align: center;
+    align-items: center;
+    animation: pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1);
+  }
+  .heading { text-align: center; }
+  .lead { font-size: 18px; }
+  .key {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 800;
+    font-size: clamp(20px, 5vw, 30px);
+    letter-spacing: 2px;
+    background: var(--sun-soft);
+    border: var(--line) dashed var(--ink);
+    border-radius: var(--radius);
+    padding: 12px 18px;
+    user-select: all;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; align-items: center; }
+  .small { font-size: 14px; color: var(--muted); }
+
+  @keyframes fade { from { opacity: 0; } }
+  @keyframes pop { from { scale: 0.7; opacity: 0; } }
+</style>

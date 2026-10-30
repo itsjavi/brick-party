@@ -1,0 +1,26 @@
+/* The app's shared tokens: the Toybox palette, fonts, outlines, corner radii and hard drop shadows. */
+:root {
+  --ink: #1b1f3b;
+  --sky: #3aaefc;
+  --paper: #ffffff;
+  --mist: #e6f7ff;
+  --muted: #475569;
+  --teal: #00c4b8;
+  --teal-ink: #0b6e68;
+  --coral: #ff5a4e;
+  --coral-ink: #c2410c;
+  --sun: #ffcc33;
+  --sun-soft: #ffe7a3;
+  --grape: #8b6cff;
+  --lime: #5fd068;
+  --rose: #ff7ab6;
+  --slate: #94a3b8;
+  --font-display: "Lilita One", system-ui, sans-serif;
+  --font-body: "Nunito", system-ui, sans-serif;
+  --line: 4px;
+  --radius-lg: 26px;
+  --radius: 18px;
+  --radius-sm: 12px;
+  --lift: 0 8px 0 var(--ink);
+  --lift-sm: 0 5px 0 var(--ink);
+}

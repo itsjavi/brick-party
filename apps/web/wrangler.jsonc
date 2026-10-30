@@ -1,0 +1,54 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "brick-party",
+  // React Router SSR + the party server (Durable Objects) in one Worker.
+  "main": "./workers/app.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "upload_source_maps": true,
+  // The Vite plugin points this at the client build; static files are served before the Worker runs.
+  "assets": {},
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "brick-party",
+      // Printed by `wrangler d1 create brick-party`. Not a secret; another account needs its own.
+      "database_id": "43ab7577-5a2c-4515-b291-531ab1e7692e",
+      // Generated from packages/db/prisma/schema.prisma with `pnpm db:diff <name>`.
+      "migrations_dir": "../../packages/db/migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "GameRoom", "class_name": "GameRoom" },
+      { "name": "LobbyRegistry", "class_name": "LobbyRegistry" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GameRoom", "LobbyRegistry"] }],
+  // The daily cleanup of idle players, old Claude cards and old spend totals (03:17 UTC).
+  "triggers": { "crons": ["17 3 * * *"] },
+  // Per-IP (or per-player) limits, counted per Cloudflare location and approximate (DECISION-11).
+  // namespace_id must be unique in the Cloudflare account.
+  "ratelimits": [
+    // New players, key restores and new rooms: per IP and per form.
+    { "name": "FORM_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+    // Room and lobby sockets per IP, room tokens per player.
+    { "name": "SOCKET_LIMITER", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+  ],
+  "vars": {
+    // Turnstile's public site key for new players. Turnstile is on when this and the
+    // TURNSTILE_SECRET_KEY secret are both set.
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAFroth7cb3JYYhJk",
+    // Multiplies every phase duration. Tests use small values.
+    "GAME_PACE": "1",
+    // Claude is opt-in: "true" here and an ANTHROPIC_API_KEY secret. Otherwise: packs and the fuzzy judge.
+    "AI_ENABLED": "false",
+    // Estimated Claude spend allowed per UTC day; after that, packs and the fuzzy judge until midnight UTC.
+    "AI_DAILY_BUDGET_USD": "3",
+    "CONTENT_MODEL": "claude-opus-5-5",
+    "JUDGE_MODEL": "claude-haiku-5-5"
+  }
+  // Secrets (`wrangler secret put`, or .dev.vars locally): SESSION_SECRET, GAME_JWT_SECRET,
+  // TURNSTILE_SECRET_KEY, and ANTHROPIC_API_KEY when AI_ENABLED is "true".
+}

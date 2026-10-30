@@ -1,0 +1,44 @@
+import type { ReactNode } from "react";
+
+/** Chunky outlined display text, like a sticker on the toy box. */
+export function Title({
+  children,
+  as: Tag = "h2",
+  size = "md",
+  tone = "paper",
+  className,
+}: {
+  children: ReactNode;
+  as?: "h1" | "h2" | "h3" | "p" | "span";
+  size?: "sm" | "md" | "lg" | "xl";
+  tone?: "paper" | "sun" | "coral" | "teal" | "ink";
+  className?: string;
+}) {
+  return <Tag className={["title", `size-${size}`, `tone-${tone}`, className ?? ""].join(" ")}>{children}</Tag>;
+}
+
+<style>
+  .title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-weight: 400;
+    line-height: 1.02;
+    letter-spacing: 0.5px;
+    color: var(--fill);
+    -webkit-text-stroke: var(--stroke) var(--ink);
+    paint-order: stroke fill;
+    text-shadow: 0 var(--drop) 0 var(--ink);
+    --fill: var(--paper);
+    --stroke: 4px;
+    --drop: 5px;
+  }
+  .tone-paper { --fill: var(--paper); }
+  .tone-sun { --fill: var(--sun); }
+  .tone-coral { --fill: var(--coral); }
+  .tone-teal { --fill: var(--teal); }
+  .tone-ink { --fill: var(--ink); --stroke: 0px; --drop: 0px; }
+  .size-sm { font-size: 22px; --stroke: 3px; --drop: 3px; }
+  .size-md { font-size: 34px; }
+  .size-lg { font-size: 48px; }
+  .size-xl { font-size: clamp(48px, 9vw, 92px); --stroke: 6px; --drop: 8px; }
+</style>

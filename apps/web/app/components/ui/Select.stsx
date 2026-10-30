@@ -1,0 +1,136 @@
+import { Select as BaseSelect } from "@base-ui/react/select";
+import type { ReactNode } from "react";
+
+export interface SelectOption<V extends string> {
+  value: V;
+  label: string;
+  /** What the option looks like, shown in the menu and on the trigger (e.g. a little brick). */
+  preview?: ReactNode;
+}
+
+/**
+ * A Toybox select on Base UI's Select: a chunky trigger showing the current choice with its preview, and a menu of
+ * options laid out as tiles, each with its preview. With `name`, it also submits its value with the form around it.
+ */
+export function Select<V extends string>({
+  label,
+  name,
+  value,
+  options,
+  onChange,
+  columns = 2,
+}: {
+  label: string;
+  name?: string;
+  value: V;
+  options: SelectOption<V>[];
+  onChange: (value: V) => void;
+  /** Tiles per row in the menu. */
+  columns?: number;
+}) {
+  const current = options.find((o) => o.value === value) ?? options[0]!;
+  return (
+    <BaseSelect.Root name={name} value={value} onValueChange={(v) => v !== null && onChange(v as V)}>
+      <div className="select">
+        <BaseSelect.Label className="select-label">{label}</BaseSelect.Label>
+        <BaseSelect.Trigger className="select-trigger">
+          {current.preview ? <span className="select-preview">{current.preview}</span> : null}
+          <BaseSelect.Value className="select-value">{() => current.label}</BaseSelect.Value>
+          <BaseSelect.Icon className="select-caret">
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </BaseSelect.Icon>
+        </BaseSelect.Trigger>
+      </div>
+      <BaseSelect.Portal>
+        <BaseSelect.Positioner className="select-positioner" sideOffset={8} alignItemWithTrigger={false}>
+          <BaseSelect.Popup className="select-popup">
+            <BaseSelect.List className="select-list" style={{ "--columns": columns }}>
+              {options.map((o) => (
+                <BaseSelect.Item key={o.value} value={o.value} className="select-item">
+                  {o.preview ? <span className="item-preview">{o.preview}</span> : null}
+                  <BaseSelect.ItemText className="item-text">{o.label}</BaseSelect.ItemText>
+                  <BaseSelect.ItemIndicator className="item-check">
+                    <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="m2.5 8.5 4 4 7-9" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </BaseSelect.ItemIndicator>
+                </BaseSelect.Item>
+              ))}
+            </BaseSelect.List>
+          </BaseSelect.Popup>
+        </BaseSelect.Positioner>
+      </BaseSelect.Portal>
+    </BaseSelect.Root>
+  );
+}
+
+<style>
+  .select { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .select-label { font-weight: 900; font-size: 14px; cursor: default; }
+  .select-trigger {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 52px;
+    font: inherit;
+    font-weight: 900;
+    font-size: 15px;
+    text-align: left;
+    color: var(--ink);
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 4px 10px 4px 6px;
+    cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  .select-trigger:hover { transform: translateY(-1px); box-shadow: 0 5px 0 var(--ink); }
+  .select-trigger:active, .select-trigger[data-popup-open] { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+  .select-trigger:focus-visible { outline: 4px solid var(--sun); outline-offset: 2px; }
+  .select-preview { display: flex; flex-shrink: 0; }
+  .select-value { flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .select-caret { display: flex; flex-shrink: 0; transition: rotate 0.15s; }
+  .select-trigger[data-popup-open] .select-caret { rotate: 180deg; }
+
+  .select-positioner { z-index: 50; outline: none; }
+  .select-popup {
+    min-width: var(--anchor-width);
+    max-height: var(--available-height);
+    overflow-y: auto;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift);
+    padding: 8px;
+    outline: none;
+    transform-origin: var(--transform-origin);
+    transition: scale 0.12s ease-out, opacity 0.12s ease-out;
+  }
+  .select-popup[data-starting-style], .select-popup[data-ending-style] { scale: 0.96; opacity: 0; }
+  .select-list { display: grid; grid-template-columns: repeat(var(--columns), minmax(0, 1fr)); gap: 6px; outline: none; }
+  .select-item {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-width: 76px;
+    padding: 6px 6px 8px;
+    border: 3px solid transparent;
+    border-radius: var(--radius-sm);
+    font-weight: 900;
+    font-size: 13px;
+    cursor: pointer;
+    outline: none;
+    user-select: none;
+  }
+  .select-item[data-highlighted] { background: var(--mist); }
+  .select-item[data-selected] { border-color: var(--ink); background: var(--sun-soft); }
+  .item-preview { display: flex; }
+  .item-text { white-space: nowrap; }
+  .item-check { position: absolute; top: 4px; right: 4px; display: flex; color: var(--ink); }
+</style>

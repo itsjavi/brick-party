@@ -1,0 +1,46 @@
+import { ICON_OUTLINE, ICONS, type IconName, type IconPart } from "../../lib/icons";
+
+/**
+ * One of our icons (`lib/icons.ts`) as inline SVG. It is 1em square by default, so it sits in text like a letter and
+ * takes the size of the text around it. Decorative unless it has a `label`.
+ */
+export function Icon({ name, size = "1em", label, className }: { name: IconName; size?: number | string; label?: string; className?: string }) {
+  const parts: readonly IconPart[] = ICONS[name];
+  return (
+    <svg
+      className={["icon", className ?? ""].join(" ")}
+      viewBox="0 0 32 32"
+      width={size}
+      height={size}
+      role={label ? "img" : undefined}
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
+      fill="none"
+      stroke="#1b1f3b"
+      strokeLinejoin="round"
+      strokeLinecap="round"
+    >
+      {parts.map((part, i) =>
+        "band" in part ? (
+          <g key={i}>
+            <path d={part.d} strokeWidth={part.w + ICON_OUTLINE * 2} />
+            <path d={part.d} stroke={part.band} strokeWidth={part.w} />
+          </g>
+        ) : "line" in part ? (
+          <path key={i} d={part.d} strokeWidth={part.line} />
+        ) : (
+          <path key={i} d={part.d} fill={part.fill} stroke={part.bare ? "none" : undefined} strokeWidth={ICON_OUTLINE} />
+        ),
+      )}
+    </svg>
+  );
+}
+
+<style>
+  .icon {
+    display: inline-block;
+    flex-shrink: 0;
+    vertical-align: -0.14em;
+    overflow: visible;
+  }
+</style>

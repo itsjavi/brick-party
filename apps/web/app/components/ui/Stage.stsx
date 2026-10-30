@@ -1,0 +1,94 @@
+import type { ReactNode } from "react";
+import { useAudioUnlock } from "../../lib/use-music";
+
+/**
+ * The full-screen sky every screen plays on: studded background, a few drifting bricks, and the
+ * app's base element styles. The shared tokens they use live in `app/tokens.css`.
+ */
+export function Stage({ children, tint = "sky" }: { children: ReactNode; tint?: "sky" | "dusk" | "mint" }) {
+  useAudioUnlock();
+  return (
+    <div className="stage" data-tint={tint}>
+      <div className="drift" aria-hidden="true">
+        <span className="floater f1" />
+        <span className="floater f2" />
+        <span className="floater f3" />
+        <span className="floater f4" />
+      </div>
+      <div className="content">{children}</div>
+    </div>
+  );
+}
+
+<style>
+  .stage {
+    position: relative;
+    min-height: 100dvh;
+    overflow: hidden;
+    background-color: var(--stage-bg);
+    background-image: radial-gradient(circle at 24px 24px, rgba(255, 255, 255, 0.16) 9px, transparent 10px);
+    background-size: 48px 48px;
+    transition: background-color 0.6s ease;
+    --stage-bg: var(--sky);
+  }
+  .stage[data-tint="dusk"] { --stage-bg: #6b5cff; }
+  .stage[data-tint="mint"] { --stage-bg: #22b8a8; }
+
+  .content {
+    position: relative;
+    z-index: 1;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .drift { position: absolute; inset: 0; pointer-events: none; }
+  .floater {
+    position: absolute;
+    width: 90px;
+    height: 64px;
+    border: var(--line) solid rgba(27, 31, 59, 0.18);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.14);
+    animation: bob 9s ease-in-out infinite;
+  }
+  .f1 { top: 12%; left: 4%; transform: rotate(-12deg); }
+  .f2 { top: 68%; left: 2%; width: 60px; height: 44px; animation-delay: -3s; }
+  .f3 { top: 18%; right: 3%; width: 70px; height: 50px; animation-delay: -5s; }
+  .f4 { bottom: 6%; right: 6%; animation-delay: -1.5s; }
+
+  @keyframes bob {
+    0%, 100% { translate: 0 0; rotate: -8deg; }
+    50% { translate: 0 -18px; rotate: 6deg; }
+  }
+</style>
+
+<style global>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: var(--font-body);
+    font-weight: 800;
+    color: var(--ink);
+    background: var(--sky);
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  h1, h2, h3, p { margin: 0; }
+  :focus-visible { outline: 4px solid var(--sun); outline-offset: 3px; }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+</style>

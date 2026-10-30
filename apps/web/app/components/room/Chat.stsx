@@ -1,0 +1,219 @@
+import type { ChatMessage, MatchView } from "@brick/game";
+import { useEffect, useRef, useState } from "react";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+
+type Members = MatchView["members"];
+
+/** Slide-in chat panel. */
+export function ChatDrawer({
+  open,
+  onClose,
+  messages,
+  members,
+  me,
+  onSend,
+}: {
+  open: boolean;
+  onClose: () => void;
+  messages: ChatMessage[];
+  members: Members;
+  me: string | null;
+  onSend: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const list = useRef<HTMLOListElement>(null);
+  const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    list.current?.scrollTo({ top: list.current.scrollHeight, behavior: "smooth" });
+  }, [messages.length, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    input.current?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  return (
+    <aside className={open ? "drawer open" : "drawer"} aria-label="Chat" aria-hidden={!open} inert={!open}>
+      <header className="head">
+        <h2 className="title">Chat</h2>
+        <button type="button" className="close" onClick={onClose} aria-label="Close chat">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1b1f3b" strokeWidth="3" strokeLinecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      </header>
+      <ol className="list" ref={list}>
+        {messages.map((m) => {
+          if (!m.playerId) {
+            return (
+              <li key={m.id} className="system">
+                {m.text}
+              </li>
+            );
+          }
+          const author = members.find((x) => x.id === m.playerId);
+          const mine = m.playerId === me;
+          return (
+            <li key={m.id} className={mine ? "msg mine" : "msg"}>
+              {author ? <Brick avatar={author.avatar} size="xs" /> : null}
+              <div className="bubble">
+                {!mine ? <span className="who">{author?.name ?? "Someone"}</span> : null}
+                <span className="text">{m.text}</span>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      <form
+        className="compose"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const text = draft.trim();
+          if (!text) return;
+          onSend(text);
+          setDraft("");
+        }}
+      >
+        <label className="sr-only" htmlFor="chat-input">
+          Message
+        </label>
+        <input
+          id="chat-input"
+          ref={input}
+          className="input"
+          value={draft}
+          maxLength={280}
+          autoComplete="off"
+          placeholder="Say something..."
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <Button type="submit" tone="teal" size="sm" quiet>
+          Send
+        </Button>
+      </form>
+    </aside>
+  );
+}
+
+/** The newest message from someone else pops up for a few seconds while the drawer is closed. */
+export function ChatToast({ message, members, onOpen }: { message: ChatMessage | null; members: Members; onOpen: () => void }) {
+  const [shown, setShown] = useState<ChatMessage | null>(null);
+  useEffect(() => {
+    if (!message) return;
+    setShown(message);
+    const id = setTimeout(() => setShown(null), 4500);
+    return () => clearTimeout(id);
+  }, [message]);
+  if (!shown) return null;
+  const author = members.find((m) => m.id === shown.playerId);
+  return (
+    <button type="button" className="toast" onClick={onOpen} key={shown.id}>
+      {author ? <Brick avatar={author.avatar} size="xs" /> : null}
+      <span className="toast-text">
+        <b>{author?.name ?? "Someone"}</b> {shown.text}
+      </span>
+    </button>
+  );
+}
+
+<style>
+  .drawer {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    bottom: 12px;
+    z-index: 30;
+    width: min(380px, calc(100vw - 24px));
+    display: flex;
+    flex-direction: column;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    translate: calc(100% + 40px) 0;
+    transition: translate 0.25s cubic-bezier(0.3, 1.3, 0.5, 1);
+  }
+  .open { translate: 0 0; }
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: var(--line) solid var(--ink);
+  }
+  .title { font-family: var(--font-display); font-weight: 400; font-size: 26px; }
+  .close {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+    background: var(--mist);
+    cursor: pointer;
+  }
+  .list {
+    list-style: none;
+    margin: 0;
+    padding: 12px 14px;
+    flex-grow: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .system { align-self: center; font-size: 13px; color: var(--muted); text-align: center; }
+  .msg { display: flex; align-items: flex-end; gap: 8px; }
+  .mine { flex-direction: row-reverse; }
+  .bubble {
+    display: flex;
+    flex-direction: column;
+    max-width: 78%;
+    background: var(--mist);
+    border: 3px solid var(--ink);
+    border-radius: 16px 16px 16px 4px;
+    padding: 6px 12px 8px;
+    overflow-wrap: anywhere;
+  }
+  .mine .bubble { background: var(--sun-soft); border-radius: 16px 16px 4px 16px; }
+  .who { font-weight: 900; font-size: 13px; color: var(--teal-ink); }
+  .text { font-size: 16px; }
+  .compose {
+    display: flex;
+    gap: 8px;
+    padding: 12px 14px;
+    border-top: var(--line) solid var(--ink);
+  }
+  .input {
+    flex-grow: 1;
+    min-width: 0;
+    font-size: 16px;
+    border: 3px solid var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+  }
+  .input:focus { outline: none; box-shadow: 0 0 0 4px var(--sun); }
+
+  .toast {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: min(420px, 100%);
+    text-align: left;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 20px 20px 20px 6px;
+    box-shadow: var(--lift-sm);
+    padding: 4px 16px 8px 10px;
+    cursor: pointer;
+    animation: pop-in 0.3s cubic-bezier(0.2, 1.6, 0.4, 1);
+  }
+  .toast-text { font-size: 15px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  @keyframes pop-in { from { scale: 0.6; opacity: 0; translate: 0 20px; } }
+</style>

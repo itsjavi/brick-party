@@ -1,0 +1,530 @@
+import { MAX_MEMBERS, type ChatMessage, type GameId, type MatchView, type Reaction } from "@brick/game";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { Link } from "react-router";
+import { playSfx } from "../../lib/audio";
+import { rememberRoom, useRoom, type RoomFeed } from "../../lib/room";
+import { useMusic } from "../../lib/use-music";
+import { BotOrNot } from "../games/BotOrNot.stsx";
+import { BrickBrawl } from "../games/BrickBrawl.stsx";
+import { DoodleChampions } from "../games/DoodleChampions.stsx";
+import { DoodleSmash } from "../games/DoodleSmash.stsx";
+import { FakeArtist } from "../games/FakeArtist.stsx";
+import { HueClue } from "../games/HueClue.stsx";
+import { InOrder } from "../games/InOrder.stsx";
+import { MakeItWorse } from "../games/MakeItWorse.stsx";
+import { PaintGrab } from "../games/PaintGrab.stsx";
+import { SkipLogic } from "../games/SkipLogic.stsx";
+import { SurveySays } from "../games/SurveySays.stsx";
+import { GAME_STYLE, type GameProps, type Seat } from "../games/types";
+import { WorstFeedback } from "../games/WorstFeedback.stsx";
+import { AudioControls } from "../ui/AudioControls.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { LinkButton } from "../ui/LinkButton.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Stage } from "../ui/Stage.stsx";
+import { Title } from "../ui/Title.stsx";
+import { ChatDrawer, ChatToast } from "./Chat.stsx";
+import { GameIntro } from "./GameIntro.stsx";
+import { Intermission } from "./Intermission.stsx";
+import { Lobby } from "./Lobby.stsx";
+import { NextUp } from "./NextUp.stsx";
+import { PlayerStrip } from "./PlayerStrip.stsx";
+import { ReactionBar, ReactionLayer } from "./Reactions.stsx";
+import { RetroReport } from "./RetroReport.stsx";
+
+/** Who's in the room as the chrome around a game shows them: names, looks, presence and scores. */
+const membersKey = (view: MatchView) => view.members.map((m) => `${m.id}:${m.name}:${m.status}:${m.score}:${m.avatar.color}`).join("|");
+/** The player strip's inputs, so it only redraws when they change. Live games send ~15 updates a second. */
+const stripKey = (view: MatchView) =>
+  `${membersKey(view)}#${view.you}#${view.hostId}#${JSON.stringify((view.game?.view as { points?: unknown } | undefined)?.points ?? null)}`;
+
+// The room's chrome skips redrawing on game updates that don't touch it.
+const Strip = memo(PlayerStrip, (a, b) => stripKey(a.view) === stripKey(b.view));
+const Reactions = memo(ReactionLayer, (a, b) => a.reactions === b.reactions && a.onDone === b.onDone && membersKey(a.view) === membersKey(b.view));
+const Chat = memo(ChatDrawer, (a, b) => a.open === b.open && a.messages === b.messages && a.me === b.me && a.members.map((m) => m.name).join() === b.members.map((m) => m.name).join());
+const Bar = memo(ReactionBar, () => true);
+
+const SCREENS: Record<GameId, ComponentType<GameProps<any>>> = {
+  "worst-feedback": WorstFeedback,
+  "bot-or-not": BotOrNot,
+  "survey-says": SurveySays,
+  "skip-logic": SkipLogic,
+  "fake-artist": FakeArtist,
+  "brick-brawl": BrickBrawl,
+  "in-order": InOrder,
+  "doodle-champions": DoodleChampions,
+  "paint-grab": PaintGrab,
+  "hue-clue": HueClue,
+  "doodle-smash": DoodleSmash,
+  "make-it-worse": MakeItWorse,
+};
+
+/** The whole in-room experience: top bar, the current phase, players, chat and reactions. */
+export function RoomScreen({ code, token, me }: { code: string; token: string; me: string }) {
+  const { view, feed, chat, reactions, status, send, dismissReaction } = useRoom(code, token);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [unread, setUnread] = useState(0);
+  const [toast, setToast] = useState<ChatMessage | null>(null);
+  const seenChat = useRef<string | null>(null);
+
+  // Test rooms never go on the open-rooms list, so there's no way back to offer for them.
+  const isRealRoom = view !== null && view.test === null;
+  useEffect(() => {
+    if (isRealRoom) rememberRoom(code);
+  }, [isRealRoom, code]);
+
+  // New chat messages from others: sound, toast, unread badge.
+  useEffect(() => {
+    const latest = chat.at(-1);
+    if (!latest || latest.id === seenChat.current) return;
+    const first = seenChat.current === null;
+    seenChat.current = latest.id;
+    if (first || !latest.playerId || latest.playerId === me) return;
+    playSfx("chat");
+    if (!chatOpen) {
+      setUnread((n) => n + 1);
+      setToast(latest);
+    }
+  }, [chat, chatOpen, me]);
+
+  // Someone arriving or leaving.
+  const memberIds = view?.members.map((m) => m.id).join(",") ?? "";
+  const previousMembers = useRef<string | null>(null);
+  useEffect(() => {
+    if (previousMembers.current !== null && memberIds !== previousMembers.current) {
+      const before = previousMembers.current.split(",").length;
+      const after = memberIds.split(",").length;
+      if (after > before) playSfx("join");
+      else if (after < before) playSfx("leave");
+    }
+    previousMembers.current = memberIds;
+  }, [memberIds]);
+
+  const react = useCallback((emoji: Reaction, target?: string) => send({ type: "react", emoji, target }), [send]);
+
+  if (status === "kicked" || status === "denied" || status === "full") {
+    return (
+      <Stage tint="dusk">
+        <Gone {...GONE[status]} />
+      </Stage>
+    );
+  }
+
+  if (!view) {
+    return (
+      <Stage>
+        <div className="connecting">
+          <Brick avatar={{ color: "teal", hat: "party" }} size="xl" bounce />
+          <Title as="p" size="md">
+            Joining room {code}...
+          </Title>
+        </div>
+      </Stage>
+    );
+  }
+
+  const tint = view.game ? GAME_STYLE[view.game.gameId].tint : "sky";
+  const isHost = view.you === view.hostId;
+  const copyInvite = () => {
+    navigator.clipboard?.writeText(`${window.location.origin}/r/${code}`).then(() => playSfx("pop"), () => {});
+  };
+
+  return (
+    <Stage tint={tint}>
+      <div className={chatOpen ? "room chat-open" : "room"}>
+        <header className="bar">
+          <Link to="/" className="mini-logo" aria-label="Leave to the title screen">
+            BRICK PARTY
+          </Link>
+          {view.test ? (
+            <span className="code" title="A practice room: the other players are bots, and nothing counts towards the Hall of Fame">
+              <span className="code-label">Test game</span>
+              <span className="code-copy">With bots</span>
+            </span>
+          ) : (
+            <button type="button" className="code" onClick={copyInvite} title="Copy invite link">
+              <span className="code-label">Room</span>
+              <span className="code-value">{code}</span>
+              <span className="code-copy">Copy link</span>
+            </button>
+          )}
+          {status !== "open" ? <span className="conn">Reconnecting...</span> : null}
+          <span className="spacer" />
+          {isHost && view.phase === "playing" && !view.paused ? (
+            <Button tone="paper" size="sm" onClick={() => send({ type: "next" })} title="End the current phase now">
+              Skip phase
+            </Button>
+          ) : null}
+          {isHost && (view.phase === "playing" || view.phase === "loading" || view.phase === "intro") ? (
+            <Button tone="paper" size="sm" onClick={() => send({ type: "end" })}>
+              End match
+            </Button>
+          ) : null}
+          {isHost && view.extendMs ? (
+            <button
+              type="button"
+              className="extend-btn"
+              onClick={() => send({ type: "extend" })}
+              title="Give everyone more time on this screen"
+            >
+              +{Math.round(view.extendMs / 1000)}s
+            </button>
+          ) : null}
+          {isHost && (view.phase === "intro" || view.phase === "playing" || view.phase === "intermission") ? (
+            <button
+              type="button"
+              className={view.paused ? "pause-btn paused-on" : "pause-btn"}
+              onClick={() => send({ type: view.paused ? "resume" : "pause" })}
+              aria-label={view.paused ? "Continue the game" : "Pause the game"}
+              title={view.paused ? "Continue the countdown" : "Pause the countdown for everyone"}
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="#1b1f3b" aria-hidden="true">
+                {view.paused ? <path d="M7 4.5v15l12-7.5z" /> : <path d="M6 4h4.5v16H6zM13.5 4H18v16h-4.5z" />}
+              </svg>
+            </button>
+          ) : null}
+          <AudioControls />
+          <button
+            type="button"
+            className="chat-btn"
+            onClick={() => {
+              setChatOpen((o) => !o);
+              setUnread(0);
+              setToast(null);
+            }}
+            aria-expanded={chatOpen}
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1b1f3b" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" />
+            </svg>
+            Chat
+            {unread ? <span className="unread">{unread}</span> : null}
+          </button>
+        </header>
+
+        <main className="main">
+          <PhaseScreen view={view} feed={feed} send={send} react={react} reactions={reactions} />
+          {view.paused ? <Paused isHost={isHost} host={view.members.find((m) => m.id === view.hostId)?.name ?? "The host"} onResume={() => send({ type: "resume" })} /> : null}
+        </main>
+
+        <footer className="dock">
+          <div className="dock-left">
+            <ChatToast
+              message={toast}
+              members={view.members}
+              onOpen={() => {
+                setChatOpen(true);
+                setUnread(0);
+              }}
+            />
+            <Strip view={view} />
+          </div>
+          <Bar onReact={react} />
+        </footer>
+      </div>
+
+      <Chat open={chatOpen} onClose={() => setChatOpen(false)} messages={chat} members={view.members} me={view.you} onSend={(text) => send({ type: "chat", text })} />
+      <Reactions reactions={reactions} view={view} onDone={dismissReaction} />
+    </Stage>
+  );
+}
+
+function PhaseScreen({
+  view,
+  feed,
+  send,
+  react,
+  reactions,
+}: {
+  view: MatchView;
+  feed: RoomFeed;
+  send: ReturnType<typeof useRoom>["send"];
+  react: (emoji: Reaction, target?: string) => void;
+  reactions: ReturnType<typeof useRoom>["reactions"];
+}) {
+  const isHost = view.you === view.hostId;
+  // Games and the intermission pick their own music.
+  useMusic(view.phase === "lobby" ? "lobby" : view.phase === "loading" ? "think" : view.phase === "report" ? "results" : null);
+
+  const players: Seat[] = useMemo(() => {
+    if (!view.game) return [];
+    return view.game.players.flatMap((id) => {
+      const m = view.members.find((x) => x.id === id);
+      return m ? [{ id: m.id, name: m.name, avatar: m.avatar, online: m.status === "online" }] : [];
+    });
+  }, [view.game, view.members]);
+
+  useEffect(() => {
+    if (view.phase === "playing") playSfx("start");
+  }, [view.phase, view.game?.gameId]);
+
+  switch (view.phase) {
+    case "lobby":
+      return <Lobby view={view} send={send} />;
+    case "intro": {
+      const gameId = view.playlist[view.index];
+      return gameId ? <GameIntro view={view} gameId={gameId} send={send} /> : null;
+    }
+    case "loading": {
+      const gameId = view.playlist[view.index];
+      return (
+        <div className="center">
+          {gameId ? (
+            <NextUp gameId={gameId} label="Get ready" compact>
+              <p className="cooking">
+                <span className="dots" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                {view.ai ? "Claude is writing fresh survey questions..." : "Shuffling fresh survey questions..."}
+              </p>
+            </NextUp>
+          ) : null}
+        </div>
+      );
+    }
+    case "playing": {
+      if (!view.game) return null;
+      const Screen = SCREENS[view.game.gameId];
+      const me = view.you && view.game.players.includes(view.you) ? view.you : null;
+      const matchScore = view.members.find((m) => m.id === view.you)?.score ?? 0;
+      return (
+        <Screen
+          view={view.game.view}
+          me={me}
+          players={players}
+          matchScore={matchScore}
+          isHost={isHost}
+          ai={view.ai}
+          act={(action) => send({ type: "action", action })}
+          react={react}
+          reactions={reactions}
+          skip={() => send({ type: "next" })}
+          feed={feed}
+        />
+      );
+    }
+    case "intermission":
+      return <Intermission view={view} send={send} />;
+    case "report":
+      return view.report ? (
+        <RetroReport
+          report={view.report}
+          me={view.you}
+          actions={
+            <>
+              {isHost ? (
+                <Button size="lg" onClick={() => send({ type: "again" })}>
+                  Play again
+                </Button>
+              ) : null}
+              {view.matchId ? (
+                <LinkButton to={`/report/${view.matchId}`}>
+                  Shareable report
+                </LinkButton>
+              ) : null}
+              <LinkButton to="/">
+                Back to the menu
+              </LinkButton>
+            </>
+          }
+        />
+      ) : (
+        <div className="center">
+          <Panel pad="lg">Nobody scored anything. Bold strategy.</Panel>
+          {isHost ? <Button onClick={() => send({ type: "again" })}>Back to the lobby</Button> : null}
+        </div>
+      );
+  }
+}
+
+/** Covers the game while the host holds the countdown. Chat and reactions stay usable around it. */
+function Paused({ isHost, host, onResume }: { isHost: boolean; host: string; onResume: () => void }) {
+  return (
+    <div className="paused" role="status">
+      <Panel pad="lg">
+        <div className="paused-body">
+          <Title as="p" size="lg" tone="sun">
+            Paused
+          </Title>
+          <p className="paused-text">
+            {isHost ? "The countdown is on hold for everyone. Chat still works." : `${host} paused the game. Chat still works.`}
+          </p>
+          {isHost ? (
+            <Button size="lg" onClick={onResume}>
+              Resume
+            </Button>
+          ) : (
+            <p className="paused-hint">It goes on by itself after 10 minutes.</p>
+          )}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+/** Why a socket closed for good, and what to tell the player. */
+const GONE = {
+  kicked: { title: "You were removed", message: "The host removed you from this room." },
+  denied: { title: "Couldn't join", message: "Your invite expired. Head back and join again." },
+  full: { title: "This room is full", message: `It already has ${MAX_MEMBERS} people. Ask the host for a new room.` },
+};
+
+function Gone({ title, message }: { title: string; message: string }) {
+  return (
+    <div className="connecting">
+      <Brick avatar={{ color: "slate", hat: "none" }} size="xl" mood="sad" />
+      <Title as="h1" size="lg">
+        {title}
+      </Title>
+      <Panel pad="md">
+        <p>{message}</p>
+      </Panel>
+      <LinkButton to="/">
+        Back to the title screen
+      </LinkButton>
+    </div>
+  );
+}
+
+<style>
+  .room {
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 16px 28px 14px;
+    max-width: 1320px;
+    margin: 0 auto;
+    width: 100%;
+  }
+  .bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  /* On wide screens the open chat sits beside the game instead of covering it. */
+  @media (width >= 1100px) {
+    .chat-open { max-width: none; padding-right: 420px; }
+  }
+  .mini-logo {
+    font-family: var(--font-display);
+    font-size: 24px;
+    color: var(--paper);
+    -webkit-text-stroke: 4px var(--ink);
+    paint-order: stroke fill;
+    text-shadow: 0 4px 0 var(--ink);
+    text-decoration: none;
+  }
+  .code {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 4px 6px 4px 14px;
+    cursor: pointer;
+  }
+  .code:active { translate: 0 3px; box-shadow: 0 2px 0 var(--ink); }
+  .code-label { font-weight: 900; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; }
+  .code-value { font-family: var(--font-display); font-size: 30px; letter-spacing: 5px; line-height: 1; }
+  .code-copy { font-weight: 900; font-size: 13px; background: var(--sun); border: 3px solid var(--ink); border-radius: 10px; padding: 4px 8px; }
+  .conn { font-weight: 900; background: var(--coral); color: var(--paper); border: 3px solid var(--ink); border-radius: 999px; padding: 4px 12px; animation: blink 1s steps(2) infinite; }
+  .spacer { flex-grow: 1; }
+  .pause-btn {
+    width: 48px;
+    height: 48px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 50%;
+    box-shadow: 0 5px 0 var(--ink);
+    cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  .pause-btn:hover { transform: translateY(-2px); box-shadow: 0 7px 0 var(--ink); }
+  .pause-btn:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+  .extend-btn {
+    height: 48px;
+    padding: 0 14px;
+    font-family: var(--font-display);
+    font-size: 20px;
+    color: var(--ink);
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 999px;
+    box-shadow: 0 5px 0 var(--ink);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  .extend-btn:hover { transform: translateY(-2px); box-shadow: 0 7px 0 var(--ink); }
+  .extend-btn:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+  .paused-on { background: var(--sun); animation: blink 1s steps(2) infinite; }
+  .chat-btn {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 900;
+    font-size: 16px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 10px 14px;
+    cursor: pointer;
+  }
+  .unread {
+    position: absolute;
+    top: -10px;
+    right: -10px;
+    min-width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--paper);
+    background: var(--coral);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    animation: bump 0.4s cubic-bezier(0.2, 1.8, 0.4, 1);
+  }
+  .main { position: relative; flex-grow: 1; min-height: 0; }
+  .paused {
+    position: absolute;
+    inset: -8px;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(27, 31, 59, 0.45);
+    backdrop-filter: blur(3px);
+    border-radius: var(--radius-lg);
+  }
+  .paused-body { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; }
+  .paused-text { font-weight: 900; font-size: 18px; }
+  .paused-hint { color: var(--muted); font-weight: 700; }
+  .dock { display: flex; align-items: flex-end; gap: 16px; }
+  .dock-left { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+  .center { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; min-height: 60vh; }
+  .cooking { display: flex; align-items: center; gap: 12px; font-weight: 900; font-size: 18px; color: var(--teal-ink); }
+  .dots { display: inline-flex; gap: 6px; }
+  .dots span { width: 12px; height: 12px; border-radius: 4px; background: var(--teal); border: 2px solid var(--ink); animation: hop 0.9s ease-in-out infinite; }
+  .dots span:nth-child(2) { animation-delay: 0.15s; }
+  .dots span:nth-child(3) { animation-delay: 0.3s; }
+  .connecting { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 24px; text-align: center; }
+
+  @keyframes blink { 50% { opacity: 0.6; } }
+  @keyframes bump { from { scale: 0.2; } }
+  @keyframes hop { 50% { translate: 0 -8px; } }
+
+  @media (width < 900px) {
+    .room { padding: 12px 14px; }
+    .dock { flex-direction: column; align-items: stretch; }
+    .code-copy { display: none; }
+  }
+</style>

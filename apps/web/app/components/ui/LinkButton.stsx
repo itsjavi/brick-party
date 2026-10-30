@@ -1,0 +1,26 @@
+import { Link, type LinkProps } from "react-router";
+
+/** A navigation link that looks like the chunky toy button. */
+export function LinkButton({ className, ...props }: LinkProps) {
+  return <Link {...props} className={["link-btn", className ?? ""].join(" ")} />;
+}
+
+<style>
+  .link-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    font-size: 20px;
+    color: var(--ink);
+    text-decoration: none;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: 0 6px 0 var(--ink);
+    padding: 12px 20px;
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  .link-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 0 var(--ink); }
+  .link-btn:active { transform: translateY(5px); box-shadow: 0 1px 0 var(--ink); }
+</style>

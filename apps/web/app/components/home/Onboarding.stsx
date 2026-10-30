@@ -1,0 +1,116 @@
+import { useState } from "react";
+import { Form, useActionData, useNavigate, useNavigation } from "react-router";
+import { useMusic } from "../../lib/use-music";
+import { AudioControls } from "../ui/AudioControls.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Field } from "../ui/Field.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Stage } from "../ui/Stage.stsx";
+import { Title } from "../ui/Title.stsx";
+import { BrickBuilder } from "./BrickBuilder.stsx";
+import { GamesShowcase } from "./GamesShowcase.stsx";
+import { HumanCheck } from "./HumanCheck.stsx";
+import { KeyReveal } from "./KeyReveal.stsx";
+
+/** First visit: build a brick, or bring one back with a recovery key. */
+export function Onboarding({
+  next,
+  createError,
+  restoreError,
+  recoveryKey,
+  turnstileSiteKey,
+}: {
+  next: string | null;
+  createError?: string | null;
+  restoreError?: string | null;
+  recoveryKey?: string | null;
+  /** Set when new players must pass Turnstile first. */
+  turnstileSiteKey?: string | null;
+}) {
+  useMusic("lobby");
+  const navigate = useNavigate();
+  const navigation = useNavigation();
+  const busy = navigation.state !== "idle";
+  const attempt = useActionData();
+  const [human, setHuman] = useState(false);
+
+  return (
+    <Stage>
+      <header className="top">
+        <AudioControls />
+      </header>
+      <main className="onboard">
+        <Title as="h1" size="xl" className="logo">
+          BRICK PARTY
+        </Title>
+        <Panel pad="lg" className="card">
+          <Title as="h2" size="md" tone="sun">
+            Build your brick
+          </Title>
+          <Form method="post" className="form">
+            <input type="hidden" name="intent" value="create-player" />
+            <BrickBuilder error={createError} />
+            {turnstileSiteKey ? <HumanCheck siteKey={turnstileSiteKey} attempt={attempt} onReady={setHuman} /> : null}
+            <Button type="submit" size="xl" className="go" disabled={busy || (!!turnstileSiteKey && !human)}>
+              Let's party!
+            </Button>
+          </Form>
+        </Panel>
+
+        <details className="restore" open={!!restoreError}>
+          <summary className="summary">Played before? Bring your brick back</summary>
+          <Form method="post" className="restore-form">
+            <input type="hidden" name="intent" value="restore" />
+            {next ? <input type="hidden" name="next" value={next} /> : null}
+            <Field
+              label="Recovery key"
+              name="key"
+              placeholder="BRIK-XXXX-XXXX-XXXX"
+              autoComplete="off"
+              spellCheck={false}
+              required
+              error={restoreError}
+            />
+            <Button type="submit" tone="teal" disabled={busy}>
+              Restore
+            </Button>
+          </Form>
+        </details>
+      </main>
+      <GamesShowcase />
+      {recoveryKey ? <KeyReveal recoveryKey={recoveryKey} onDone={() => navigate(next ?? "/", { replace: true })} /> : null}
+    </Stage>
+  );
+}
+
+<style>
+  .top { display: flex; justify-content: flex-end; padding: 20px 28px 0; }
+  .onboard {
+    width: min(980px, 100%);
+    margin: 0 auto;
+    padding: 0 20px 48px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 26px;
+  }
+  .logo { text-align: center; }
+  .card { width: 100%; display: flex; flex-direction: column; gap: 18px; }
+  .form { display: flex; flex-direction: column; gap: 24px; }
+  .go { align-self: center; }
+  .restore {
+    width: 100%;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift-sm);
+    padding: 14px 20px;
+  }
+  .summary { cursor: pointer; font-family: var(--font-display); font-size: 22px; }
+  .restore-form { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-top: 12px; }
+  .restore-form > :first-child + * { flex: 1 1 260px; }
+
+  @media (width < 700px) {
+    .top { padding: 14px 16px 0; }
+  }
+</style>

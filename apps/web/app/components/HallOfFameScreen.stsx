@@ -1,0 +1,180 @@
+import { AWARD_INFO, type Avatar } from "@brick/game";
+import { Link } from "react-router";
+import { awardIcon } from "../lib/icons";
+import { PageShell } from "./PageShell.stsx";
+import { Brick } from "./ui/Brick.stsx";
+import { Icon } from "./ui/Icon.stsx";
+import { Panel } from "./ui/Panel.stsx";
+import { Title } from "./ui/Title.stsx";
+
+interface FamePlayer {
+  id: string;
+  nickname: string;
+  avatar: Avatar;
+  matches: number;
+  wins: number;
+  points: number;
+  awards: Record<string, number>;
+}
+
+interface RecentMatch {
+  id: string;
+  roomCode: string;
+  endedAt: string | number | Date;
+  players: number;
+  winner: { nickname: string; avatar: Avatar } | null;
+}
+
+export function HallOfFameScreen({ players, recent, me }: { players: FamePlayer[]; recent: RecentMatch[]; me: string | null }) {
+  const ranked = [...players].sort((a, b) => b.wins - a.wins || b.points - a.points);
+  return (
+    <PageShell>
+      <Title as="h1" size="lg">
+        Hall of Fame
+      </Title>
+
+      {ranked.length === 0 ? (
+        <Panel pad="lg">No finished matches yet. Go make history!</Panel>
+      ) : (
+        <>
+          <div className="champs">
+            {ranked.slice(0, 3).map((p, i) => (
+              <Panel key={p.id} tone={i === 0 ? "sun" : "paper"} tilt={i === 0 ? 0 : i === 1 ? -2 : 2} className="champ">
+                <span className="medal">{i + 1}</span>
+                <Brick avatar={p.avatar} size={i === 0 ? "lg" : "md"} mood={i === 0 ? "sly" : "happy"} />
+                <span className="champ-name">{p.nickname}</span>
+                <span className="champ-stat">
+                  {p.wins} {p.wins === 1 ? "win" : "wins"} · {p.points.toLocaleString("en-US")} pts
+                </span>
+              </Panel>
+            ))}
+          </div>
+
+          <Panel className="table-wrap">
+            <table className="table">
+              <caption className="sr-only">All players</caption>
+              <thead>
+                <tr>
+                  <th scope="col">#</th>
+                  <th scope="col">Player</th>
+                  <th scope="col" className="num">
+                    Wins
+                  </th>
+                  <th scope="col" className="num">
+                    Matches
+                  </th>
+                  <th scope="col" className="num">
+                    Points
+                  </th>
+                  <th scope="col">Awards</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ranked.map((p, i) => (
+                  <tr key={p.id} className={p.id === me ? "me" : undefined}>
+                    <td className="num">{i + 1}</td>
+                    <th scope="row" className="who">
+                      <Brick avatar={p.avatar} size="xs" /> {p.nickname}
+                    </th>
+                    <td className="num">{p.wins}</td>
+                    <td className="num">{p.matches}</td>
+                    <td className="num">{p.points.toLocaleString("en-US")}</td>
+                    <td className="awards">
+                      {Object.entries(p.awards)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 5)
+                        .map(([id, count]) => (
+                          <span key={id} className="award" title={`${AWARD_INFO[id]?.title ?? id} ×${count}`}>
+                            <Icon name={awardIcon(id)} />
+                            <span className="sr-only">{AWARD_INFO[id]?.title ?? id}</span>
+                            {count > 1 ? <span className="times">×{count}</span> : null}
+                          </span>
+                        ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </>
+      )}
+
+      {recent.length ? (
+        <Panel className="recent">
+          <h2 className="heading">Recent matches</h2>
+          <ul className="list">
+            {recent.map((m) => (
+              <li key={m.id}>
+                <Link to={`/report/${m.id}`} className="match">
+                  <span className="code">{m.roomCode}</span>
+                  <span className="when">{new Date(m.endedAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</span>
+                  <span className="count">{m.players} players</span>
+                  {m.winner ? (
+                    <span className="winner">
+                      <Brick avatar={m.winner.avatar} size="xs" /> {m.winner.nickname} won
+                    </span>
+                  ) : null}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      ) : null}
+    </PageShell>
+  );
+}
+
+<style>
+  .champs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; align-items: end; }
+  .champ { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+  .medal {
+    position: absolute;
+    top: -16px;
+    left: -12px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    font-size: 22px;
+    background: var(--coral);
+    color: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+  }
+  .champ-name { font-family: var(--font-display); font-size: 22px; }
+  .champ-stat { font-weight: 900; font-size: 14px; }
+  .table-wrap { overflow-x: auto; }
+  .table { width: 100%; border-collapse: collapse; }
+  .table th, .table td { padding: 8px 10px; text-align: left; border-bottom: 2px solid #dbe4ee; }
+  .who { display: flex; align-items: center; gap: 8px; font-weight: 900; white-space: nowrap; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .me { background: var(--sun-soft); }
+  .awards { white-space: nowrap; }
+  .award { font-size: 20px; margin-right: 6px; }
+  .times { font-size: 12px; font-weight: 900; }
+  .recent { display: flex; flex-direction: column; gap: 12px; }
+  .heading { font-family: var(--font-display); font-weight: 400; font-size: 26px; }
+  .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .match {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    color: var(--ink);
+    text-decoration: none;
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    background: var(--mist);
+    padding: 6px 12px;
+  }
+  .match:hover { background: var(--sun-soft); }
+  .code { font-family: var(--font-display); font-size: 20px; letter-spacing: 3px; }
+  .when, .count { font-size: 14px; color: var(--muted); }
+  .winner { display: flex; align-items: center; gap: 6px; font-weight: 900; margin-left: auto; }
+
+  @media (width < 700px) {
+    .champs { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>

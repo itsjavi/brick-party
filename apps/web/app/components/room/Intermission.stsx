@@ -1,0 +1,114 @@
+import type { ClientMessage, MatchView } from "@brick/game";
+import { useEffect } from "react";
+import { playSfx } from "../../lib/audio";
+import { useMusic } from "../../lib/use-music";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Timer } from "../ui/Timer.stsx";
+import { Title } from "../ui/Title.stsx";
+import { NextUp } from "./NextUp.stsx";
+
+/** Between games: the scoreboard with what everyone just earned, and what's next. */
+export function Intermission({ view, send }: { view: MatchView; send: (msg: ClientMessage) => void }) {
+  useMusic("results");
+  const isHost = view.you === view.hostId;
+  const last = view.lastGame;
+  const ranked = [...view.members].sort((a, b) => b.score - a.score);
+  const top = Math.max(1, ...ranked.map((m) => m.score));
+  const nextId = view.playlist[view.index + 1];
+  const myGain = view.you && last ? (last.points[view.you] ?? 0) : 0;
+
+  useEffect(() => {
+    playSfx(myGain > 0 ? "point" : "whoosh");
+  }, [myGain]);
+
+  return (
+    <div className="intermission">
+      <Panel className="board">
+        <Title as="h2" size="md" tone="sun">
+          Scoreboard
+        </Title>
+        <ol className="ranks">
+          {ranked.map((m, i) => {
+            const gain = last?.points[m.id] ?? 0;
+            return (
+              <li key={m.id} className={m.id === view.you ? "rank me" : "rank"} style={{ animationDelay: `${i * 70}ms` }}>
+                <span className="pos">{i + 1}</span>
+                <Brick avatar={m.avatar} size="xs" mood={i === 0 ? "sly" : "happy"} />
+                <span className="name">{m.name}</span>
+                <span className="track">
+                  <span className="fill" style={{ width: `${Math.max(4, (m.score / top) * 100)}%`, background: i === 0 ? "var(--sun)" : "var(--teal)" }} />
+                </span>
+                {gain > 0 ? <span className="gain">+{gain}</span> : <span className="gain none">+0</span>}
+                <span className="total">{m.score.toLocaleString("en-US")}</span>
+              </li>
+            );
+          })}
+        </ol>
+      </Panel>
+      <div className="side">
+        {nextId ? (
+          <NextUp gameId={nextId} compact>
+            <div className="controls">
+              <Timer endsAt={view.phaseEndsAt} size={64} ticks={false} />
+              <span className="soon">Starting soon</span>
+              {isHost ? (
+                <>
+                  <Button tone="sun" onClick={() => send({ type: "next" })}>
+                    Start now
+                  </Button>
+                  <Button tone="paper" onClick={() => send({ type: "end" })}>
+                    End match
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          </NextUp>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+<style>
+  .intermission {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 24px;
+    align-items: start;
+  }
+  .board { display: flex; flex-direction: column; gap: 14px; }
+  .ranks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .rank {
+    display: grid;
+    grid-template-columns: 30px auto minmax(70px, 140px) minmax(0, 1fr) 56px 64px;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 10px 8px;
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    background: var(--mist);
+    animation: slide 0.4s cubic-bezier(0.2, 1.3, 0.4, 1) backwards;
+  }
+  .me { background: var(--sun-soft); }
+  .pos { font-family: var(--font-display); font-size: 22px; text-align: center; }
+  .name { font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track { height: 18px; border: 3px solid var(--ink); border-radius: 999px; background: var(--paper); overflow: hidden; }
+  .fill { display: block; height: 100%; border-right: 3px solid var(--ink); transition: width 1s cubic-bezier(0.2, 1, 0.3, 1); }
+  .gain { font-family: var(--font-display); font-size: 18px; color: var(--teal-ink); text-align: right; animation: bump 0.6s 0.4s backwards; }
+  .none { color: var(--muted); }
+  .total { font-family: var(--font-display); font-size: 20px; text-align: right; }
+  .side { display: flex; justify-content: center; }
+  .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .soon { font-weight: 900; flex-grow: 1; }
+
+  @keyframes slide { from { translate: -40px 0; opacity: 0; } }
+  @keyframes bump { from { scale: 2; opacity: 0; } }
+
+  @media (width < 1000px) {
+    .intermission { grid-template-columns: minmax(0, 1fr); }
+    .rank { grid-template-columns: 26px auto minmax(0, 1fr) 48px 56px; }
+    .track { display: none; }
+  }
+</style>

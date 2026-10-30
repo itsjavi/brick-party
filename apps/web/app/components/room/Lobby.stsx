@@ -1,0 +1,344 @@
+import {
+  ENDLESS_MAX_GAMES,
+  ENDLESS_ROTATION,
+  GAME_IDS,
+  GAMES,
+  MIN_PLAYERS,
+  PRESET_GAMES,
+  shuffleLineup,
+  type ClientMessage,
+  type GameId,
+  type MatchSettings,
+  type MatchView,
+  type PlaylistPreset,
+} from "@brick/game";
+import { playSfx } from "../../lib/audio";
+import { GAME_ICON } from "../../lib/icons";
+import { GAME_STYLE } from "../games/types";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+
+const PRESETS: { id: PlaylistPreset; label: string }[] = [
+  { id: "quick", label: "30 min" },
+  { id: "full", label: "1 hour" },
+  { id: "endless", label: "Endless" },
+  { id: "custom", label: "Custom" },
+];
+
+function lineup(settings: MatchSettings): GameId[] {
+  if (settings.preset === "custom") return settings.custom;
+  if (settings.preset === "endless") return ENDLESS_ROTATION;
+  return settings.lineup?.length ? settings.lineup : PRESET_GAMES[settings.preset];
+}
+
+export function Lobby({ view, send }: { view: MatchView; send: (msg: ClientMessage) => void }) {
+  const isHost = view.you === view.hostId;
+  const host = view.members.find((m) => m.id === view.hostId);
+  const online = view.members.filter((m) => m.status === "online").length;
+  const games = lineup(view.settings);
+  const minutes = games.reduce((sum, id) => sum + GAMES[id].minutes, 0);
+  const update = (patch: Partial<MatchSettings>) => {
+    playSfx("click");
+    send({ type: "settings", settings: { ...view.settings, ...patch } });
+  };
+  const toggleCustom = (id: GameId) => {
+    const custom = view.settings.custom.includes(id)
+      ? view.settings.custom.filter((g) => g !== id)
+      : GAME_IDS.filter((g) => g === id || view.settings.custom.includes(g));
+    update({ custom });
+  };
+
+  return (
+    <div className="lobby">
+      <Panel className="who">
+        <div className="panel-head">
+          <h2 className="heading">Who's here</h2>
+          <span className="count">
+            {view.members.length} / 12
+          </span>
+        </div>
+        <ul className="grid">
+          {view.members.map((m, i) => (
+            <li key={m.id} className={m.status === "away" ? "player away" : "player"}>
+              <Brick avatar={m.avatar} size="md" tilt={((i * 7) % 7) - 3} mood={m.status === "away" ? "sleepy" : "happy"} bounce={m.id === view.you} />
+              <span className="tag">{m.name}</span>
+              <span className="status">
+                {m.id === view.hostId ? "Host" : m.status === "away" ? "Reconnecting..." : "Ready"}
+              </span>
+              {isHost && m.id !== view.you ? (
+                <button
+                  type="button"
+                  className="kick"
+                  aria-label={`Remove ${m.name}`}
+                  title={`Remove ${m.name}`}
+                  onClick={() => send({ type: "kick", playerId: m.id })}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1b1f3b" strokeWidth="4" strokeLinecap="round" aria-hidden="true">
+                    <path d="M6 6l12 12M18 6L6 18" />
+                  </svg>
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </Panel>
+
+      <Panel className="setup">
+        <h2 className="heading">Tonight's lineup</h2>
+        <div className="segmented" role="radiogroup" aria-label="Playlist">
+          {PRESETS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              role="radio"
+              aria-checked={view.settings.preset === p.id}
+              className={view.settings.preset === p.id ? "seg on" : "seg"}
+              disabled={!isHost}
+              onClick={() => update({ preset: p.id, lineup: null })}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {isHost && (view.settings.preset === "quick" || view.settings.preset === "full") ? (
+          <div className="shuffle-row">
+            <Button tone="sun" size="sm" onClick={() => update({ lineup: shuffleLineup(view.settings.preset as "quick" | "full") })}>
+              <Icon name="dice" /> Shuffle the games
+            </Button>
+            {view.settings.lineup?.length ? (
+              <Button tone="paper" size="sm" onClick={() => update({ lineup: null })}>
+                Back to the usual
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {view.settings.preset === "custom" ? (
+          <ul className="games">
+            {GAME_IDS.map((id) => (
+              <li key={id}>
+                <label className="game pickable">
+                  <input
+                    type="checkbox"
+                    className="check"
+                    checked={view.settings.custom.includes(id)}
+                    disabled={!isHost}
+                    onChange={() => toggleCustom(id)}
+                  />
+                  <GameRow id={id} />
+                </label>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <ol className="games">
+            {games.map((id, i) => (
+              <li key={`${id}-${i}`} className="game">
+                <GameRow id={id} n={i + 1} />
+              </li>
+            ))}
+          </ol>
+        )}
+
+        <div className="spice">
+          <span className="spice-label">Spice</span>
+          {(["mild", "spicy"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              aria-pressed={view.settings.spice === s}
+              className={view.settings.spice === s ? `pill on ${s}` : "pill"}
+              disabled={!isHost}
+              onClick={() => update({ spice: s })}
+            >
+              {s === "mild" ? "Mild" : "Spicy"}
+            </button>
+          ))}
+          <span className="note">still HR-safe</span>
+        </div>
+      </Panel>
+
+      <div className="go">
+        {isHost ? (
+          <>
+            <Button
+              size="xl"
+              disabled={online < MIN_PLAYERS || games.length === 0}
+              onClick={() => send({ type: "start" })}
+            >
+              {online < MIN_PLAYERS ? `Need ${MIN_PLAYERS - online} more` : "START THE PARTY"}
+            </Button>
+            <span className="go-note">
+              {view.settings.preset === "endless"
+                ? `Plays until you end it (up to ${ENDLESS_MAX_GAMES} games)`
+                : `${games.length} games · about ${Math.round(minutes / 5) * 5} minutes`}
+            </span>
+          </>
+        ) : (
+          <Panel pad="sm" className="waiting">
+            Waiting for <b>{host?.name ?? "the host"}</b> to start the party...
+          </Panel>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GameRow({ id, n }: { id: GameId; n?: number }) {
+  const game = GAMES[id];
+  return (
+    <>
+      <span className="tile" style={{ background: GAME_STYLE[id].color }} aria-hidden="true">
+        {n ?? <Icon name={GAME_ICON[id]} />}
+      </span>
+      <span className="game-text">
+        <span className="game-name">{game.title}</span>
+        <span className="game-tag">{game.tagline}</span>
+      </span>
+      <span className="mins">{game.minutes} min</span>
+    </>
+  );
+}
+
+<style>
+  .lobby {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    grid-template-areas: "who setup" "go go";
+    gap: 22px 24px;
+    align-content: start;
+  }
+  .who { grid-area: who; display: flex; flex-direction: column; gap: 14px; }
+  .setup { grid-area: setup; display: flex; flex-direction: column; gap: 14px; }
+  .go { grid-area: go; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .panel-head { display: flex; align-items: center; gap: 12px; }
+  .heading { font-family: var(--font-display); font-weight: 400; font-size: 30px; }
+  .count { font-weight: 900; font-size: 16px; background: var(--mist); border: 3px solid var(--ink); border-radius: 999px; padding: 2px 12px; }
+
+  .grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 18px 10px; }
+  .player { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; animation: drop-in 0.45s cubic-bezier(0.2, 1.5, 0.4, 1); }
+  .away { opacity: 0.55; }
+  .tag {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 900;
+    font-size: 16px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 2px 12px;
+  }
+  .status { font-size: 13px; color: var(--muted); margin-top: -4px; }
+  .kick {
+    position: absolute;
+    top: 0;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .player:hover .kick,
+  .kick:focus-visible { opacity: 1; }
+
+  .shuffle-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .segmented {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    background: var(--mist);
+    border: 3px solid var(--ink);
+    border-radius: 16px;
+    padding: 5px;
+  }
+  .seg {
+    font-weight: 900;
+    font-size: 15px;
+    background: transparent;
+    border: 3px solid transparent;
+    border-radius: 11px;
+    padding: 7px 4px;
+    cursor: pointer;
+  }
+  .seg:disabled { cursor: default; }
+  .on { background: var(--sun); border-color: var(--ink); }
+
+  .games { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .game {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border: 3px solid var(--ink);
+    border-radius: 18px;
+    background: #fbfdff;
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 8px 12px 8px 8px;
+  }
+  .pickable { cursor: pointer; }
+  .pickable:has(.check:not(:checked)) { opacity: 0.55; }
+  .check { width: 22px; height: 22px; accent-color: var(--teal-ink); flex-shrink: 0; }
+  .tile {
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 3px solid var(--ink);
+    border-radius: 14px;
+    box-shadow: inset -6px -6px 0 rgba(0, 0, 0, 0.15);
+    font-family: var(--font-display);
+    font-size: 24px;
+    color: var(--paper);
+    -webkit-text-stroke: 3px var(--ink);
+    paint-order: stroke fill;
+  }
+  .game-text { display: flex; flex-direction: column; min-width: 0; flex-grow: 1; }
+  .game-name { font-family: var(--font-display); font-size: 20px; line-height: 1.1; }
+  .game-tag { font-size: 14px; color: var(--muted); }
+  .mins { font-weight: 900; font-size: 14px; white-space: nowrap; }
+
+  .spice { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .spice-label { font-weight: 900; }
+  .pill {
+    font-weight: 900;
+    font-size: 15px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    box-shadow: 0 3px 0 var(--ink);
+    padding: 5px 16px;
+    cursor: pointer;
+  }
+  .pill:disabled { cursor: default; }
+  .mild { background: var(--lime); }
+  .spicy { background: var(--coral); }
+  .note { font-size: 13px; color: var(--muted); }
+  .go-note {
+    font-weight: 900;
+    color: var(--paper);
+    -webkit-text-stroke: 3px var(--ink);
+    paint-order: stroke fill;
+  }
+  .waiting { font-size: 20px; text-align: center; }
+
+  @keyframes drop-in {
+    from { translate: 0 -40px; opacity: 0; }
+  }
+
+  @media (width < 900px) {
+    .lobby { grid-template-columns: minmax(0, 1fr); grid-template-areas: "who" "setup" "go"; }
+  }
+</style>

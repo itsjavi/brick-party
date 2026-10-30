@@ -1,0 +1,145 @@
+import { AVATAR_COLORS, AVATAR_FACES, AVATAR_HATS, AVATAR_SHAPES, type Avatar } from "@brick/game";
+import { useState } from "react";
+import { AVATAR_HEX, FACE_LABELS, HAT_LABELS, SHAPE_LABELS } from "../../lib/avatar";
+import { playSfx } from "../../lib/audio";
+import { Brick } from "../ui/Brick.stsx";
+import { Field } from "../ui/Field.stsx";
+import { Select } from "../ui/Select.stsx";
+
+/**
+ * Nickname, color, hat, face and shape pickers with a live preview. Renders named inputs
+ * (`nickname`, `color`, `hat`, `face`, `shape`) so it can sit inside any form. Colours are a row of swatches; hats,
+ * faces and shapes are menus that show each option on a little brick, so the builder stays calm.
+ */
+export function BrickBuilder({
+  defaultNickname = "",
+  defaultAvatar = { color: "teal", hat: "party", face: "classic", shape: "brick" },
+  error,
+}: {
+  defaultNickname?: string;
+  defaultAvatar?: Avatar;
+  error?: string | null;
+}) {
+  const [nickname, setNickname] = useState(defaultNickname);
+  const [avatar, setAvatar] = useState<Avatar>(defaultAvatar);
+
+  const pick = (patch: Partial<Avatar>) => {
+    playSfx("pop");
+    setAvatar((a) => ({ ...a, ...patch }));
+  };
+
+  return (
+    <div className="builder">
+      <div className="preview">
+        <Brick avatar={avatar} size="xl" bounce />
+        <span className="tag">{nickname.trim() || "Your name here"}</span>
+      </div>
+      <div className="controls">
+        <Field
+          label="Nickname"
+          name="nickname"
+          value={nickname}
+          maxLength={20}
+          autoComplete="nickname"
+          placeholder="Captain Churn"
+          required
+          error={error}
+          onChange={(e) => setNickname(e.target.value)}
+        />
+        <fieldset className="group">
+          <legend className="legend">Colour</legend>
+          <div className="swatches">
+            {AVATAR_COLORS.map((color) => (
+              <label key={color} className="swatch" title={color}>
+                <input
+                  type="radio"
+                  name="color"
+                  value={color}
+                  checked={avatar.color === color}
+                  onChange={() => pick({ color })}
+                  className="sr-only"
+                />
+                <span className="dot" style={{ background: AVATAR_HEX[color] }} />
+                <span className="sr-only">{color}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <div className="menus">
+          <Select
+            label="Hat"
+            name="hat"
+            value={avatar.hat}
+            columns={4}
+            onChange={(hat) => pick({ hat })}
+            options={AVATAR_HATS.map((hat) => ({ value: hat, label: HAT_LABELS[hat], preview: <Brick avatar={{ ...avatar, hat }} size="xs" /> }))}
+          />
+          <Select
+            label="Face"
+            name="face"
+            value={avatar.face}
+            columns={4}
+            onChange={(face) => pick({ face })}
+            options={AVATAR_FACES.map((face) => ({ value: face, label: FACE_LABELS[face], preview: <Brick avatar={{ ...avatar, face, hat: "none" }} size="xs" /> }))}
+          />
+          <Select
+            label="Shape"
+            name="shape"
+            value={avatar.shape}
+            columns={3}
+            onChange={(shape) => pick({ shape })}
+            options={AVATAR_SHAPES.map((shape) => ({ value: shape, label: SHAPE_LABELS[shape], preview: <Brick avatar={{ ...avatar, shape, hat: "none" }} size="xs" /> }))}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+<style>
+  .builder {
+    display: grid;
+    grid-template-columns: minmax(200px, 0.8fr) minmax(0, 1.4fr);
+    gap: 28px;
+    align-items: center;
+  }
+  .preview {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    padding: 24px 12px 20px;
+    background: var(--mist);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+  }
+  .tag {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 900;
+    font-size: 20px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 4px 16px;
+  }
+  .controls { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+  .group { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .legend { font-weight: 900; font-size: 14px; padding: 0; margin-bottom: 6px; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+  .swatch { display: flex; padding: 3px; border: 3px solid transparent; border-radius: 50%; cursor: pointer; transition: transform 0.1s; }
+  .swatch:hover { transform: translateY(-2px); }
+  .swatch:has(input:checked) { border-color: var(--ink); }
+  .swatch:has(input:focus-visible) { outline: 4px solid var(--sun); outline-offset: 2px; }
+  .dot { display: block; width: 30px; height: 30px; border: 3px solid var(--ink); border-radius: 50%; box-shadow: inset -4px -4px 0 rgba(0, 0, 0, 0.14); }
+  .menus { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+
+  @media (width < 760px) {
+    .builder { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (width < 480px) {
+    .menus { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>

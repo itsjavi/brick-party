@@ -1,0 +1,222 @@
+import type { Avatar } from "@brick/game";
+import { Form, Link, useNavigation } from "react-router";
+import { useLastRoom, useOpenRooms } from "../../lib/room";
+import { useMusic } from "../../lib/use-music";
+import { AudioControls } from "../ui/AudioControls.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Stage } from "../ui/Stage.stsx";
+import { Title } from "../ui/Title.stsx";
+import { BackToRoom } from "./BackToRoom.stsx";
+import { GamesShowcase } from "./GamesShowcase.stsx";
+import { OpenRooms } from "./OpenRooms.stsx";
+
+/** The main menu for a player who already has a brick. */
+export function TitleScreen({
+  player,
+  joinError,
+  roomError,
+}: {
+  player: { nickname: string; avatar: Avatar };
+  joinError?: string | null;
+  roomError?: string | null;
+}) {
+  useMusic("lobby");
+  const navigation = useNavigation();
+  const busy = navigation.state !== "idle";
+  const rooms = useOpenRooms();
+  const lastRoom = useLastRoom();
+  const myRoom = rooms?.find((r) => r.code === lastRoom) ?? null;
+
+  return (
+    <Stage>
+      <header className="top">
+        <Link to="/profile" className="me" aria-label="Edit your brick">
+          <Brick avatar={player.avatar} size="xs" />
+          <span className="me-name">{player.nickname}</span>
+        </Link>
+        <AudioControls />
+      </header>
+
+      <main className="menu">
+        <section className="hero">
+          <Title as="h1" size="xl" className="logo">
+            BRICK PARTY
+          </Title>
+          <p className="tagline">The Formbricks party game: surveys, bots and truly terrible feedback.</p>
+          <div className="pedestal" aria-hidden="true">
+            <Brick avatar={player.avatar} size="xl" bounce />
+            <span className="plinth" />
+          </div>
+        </section>
+
+        <section className="actions">
+          {myRoom ? <BackToRoom room={myRoom} /> : null}
+          <Form method="post">
+            <input type="hidden" name="intent" value="create-room" />
+            <Button type="submit" size="xl" className="create" disabled={busy}>
+              Create a room
+            </Button>
+            {roomError ? (
+              <p className="join-error" role="alert">
+                {roomError}
+              </p>
+            ) : null}
+          </Form>
+
+          <Form method="post" className="join">
+            <input type="hidden" name="intent" value="join" />
+            <label className="join-label" htmlFor="join-code">
+              Got a code?
+            </label>
+            <div className="join-row">
+              <input
+                id="join-code"
+                name="code"
+                className="code"
+                maxLength={4}
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                placeholder="BRKZ"
+                required
+                aria-invalid={joinError ? true : undefined}
+                aria-describedby={joinError ? "join-error" : undefined}
+              />
+              <Button type="submit" tone="teal" size="lg" disabled={busy}>
+                Join
+              </Button>
+            </div>
+            {joinError ? (
+              <p id="join-error" className="join-error">
+                {joinError}
+              </p>
+            ) : null}
+          </Form>
+
+          <OpenRooms rooms={rooms} />
+
+          <nav className="links" aria-label="More">
+            <Link to="/hall-of-fame" className="link-btn">
+              Hall of Fame
+            </Link>
+            <Link to="/profile" className="link-btn">
+              My brick
+            </Link>
+          </nav>
+        </section>
+      </main>
+      <GamesShowcase />
+    </Stage>
+  );
+}
+
+<style>
+  .top {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 14px;
+    padding: 20px 28px 0;
+  }
+  .me {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-decoration: none;
+    color: var(--ink);
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 999px;
+    box-shadow: var(--lift-sm);
+    padding: 2px 16px 6px 10px;
+  }
+  .me-name { font-weight: 900; font-size: 17px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .menu {
+    flex-grow: 1;
+    width: min(1180px, 100%);
+    margin: 0 auto;
+    padding: 12px 28px 40px;
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+    gap: 40px;
+    align-items: center;
+  }
+  .hero { display: flex; flex-direction: column; align-items: center; gap: 18px; text-align: center; }
+  .logo { animation: wobble 6s ease-in-out infinite; }
+  .tagline {
+    font-size: 20px;
+    color: var(--paper);
+    -webkit-text-stroke: 3px var(--ink);
+    paint-order: stroke fill;
+    max-width: 460px;
+  }
+  .pedestal { display: flex; flex-direction: column; align-items: center; margin-top: 18px; }
+  .plinth {
+    width: 240px;
+    height: 34px;
+    margin-top: 6px;
+    background: var(--sun);
+    border: var(--line) solid var(--ink);
+    border-radius: 50%;
+    box-shadow: 0 8px 0 var(--ink);
+  }
+
+  .actions { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+  .create { width: 100%; }
+  .join {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 16px 18px;
+  }
+  .join-label { font-family: var(--font-display); font-size: 24px; }
+  .join-row { display: flex; gap: 12px; }
+  .code {
+    flex-grow: 1;
+    min-width: 0;
+    font-family: var(--font-display);
+    font-size: 34px;
+    letter-spacing: 10px;
+    text-transform: uppercase;
+    text-align: center;
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    background: var(--mist);
+  }
+  .code:focus { outline: none; box-shadow: 0 0 0 4px var(--sun); }
+  .join-error { color: #b42318; font-weight: 900; }
+  .links { display: flex; gap: 12px; flex-wrap: wrap; }
+  .link-btn {
+    flex: 1 1 140px;
+    text-align: center;
+    font-family: var(--font-display);
+    font-size: 20px;
+    color: var(--ink);
+    text-decoration: none;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: 0 6px 0 var(--ink);
+    padding: 10px 16px;
+  }
+  .link-btn:hover { transform: translateY(-2px); }
+  .link-btn:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--ink); }
+
+  @keyframes wobble {
+    0%, 100% { rotate: -2deg; }
+    50% { rotate: 2deg; }
+  }
+
+  @media (width < 900px) {
+    .menu { grid-template-columns: minmax(0, 1fr); gap: 24px; padding: 8px 16px 32px; }
+    .pedestal { display: none; }
+    .top { padding: 14px 16px 0; }
+  }
+</style>

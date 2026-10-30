@@ -1,0 +1,215 @@
+import { GAME_CATEGORIES, GAME_IDS, GAMES, MAX_PLAYERS, MIN_PLAYERS, type GameCategory } from "@brick/game";
+import { useEffect, useState } from "react";
+import { GAME_ICON } from "../../lib/icons";
+import { GAME_STYLE } from "../games/types";
+import { RulesButton } from "../room/Rules.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Title } from "../ui/Title.stsx";
+
+const HOW_IT_WORKS = [
+  { title: "Make a room", text: "Create a room and share its 4-letter code or link on the call." },
+  { title: "Everyone joins", text: `Each player joins from their own browser. ${MIN_PLAYERS} to ${MAX_PLAYERS} players.` },
+  { title: "Play the lineup", text: "Pick 30 minutes, an hour or endless. Points carry over between games." },
+  { title: "Retro Report", text: "The match ends with a podium, silly awards and a spot in the Hall of Fame." },
+];
+
+const CATEGORY_LABELS: Record<GameCategory, string> = { words: "Words", drawing: "Drawing", action: "Action", guessing: "Guessing" };
+const FILTER_KEY = "brickparty:game-filter";
+
+/** The category this viewer last filtered by, kept in this browser only; "all" when there's none or it can't be read. */
+function useGameFilter(): [GameCategory | "all", (c: GameCategory | "all") => void] {
+  const [filter, setFilter] = useState<GameCategory | "all">("all");
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(FILTER_KEY);
+      if (saved && (GAME_CATEGORIES as readonly string[]).includes(saved)) setFilter(saved as GameCategory);
+    } catch {
+      // Storage can be blocked; the list just starts unfiltered.
+    }
+  }, []);
+  const choose = (c: GameCategory | "all") => {
+    setFilter(c);
+    try {
+      localStorage.setItem(FILTER_KEY, c);
+    } catch {
+      // Same: the choice just isn't remembered.
+    }
+  };
+  return [filter, choose];
+}
+
+/** How a party works, and every game with its rules, for the title screens. */
+export function GamesShowcase() {
+  const [filter, setFilter] = useGameFilter();
+  const shown = GAME_IDS.filter((id) => filter === "all" || GAMES[id].categories.includes(filter));
+  return (
+    <section className="showcase" aria-labelledby="showcase-title">
+      <Title as="h2" size="md" tone="sun">
+        <span id="showcase-title">How a party works</span>
+      </Title>
+      <ol className="how">
+        {HOW_IT_WORKS.map((step, i) => (
+          <li key={step.title} className="how-step">
+            <span className="how-num" aria-hidden="true">
+              {i + 1}
+            </span>
+            <span className="how-title">{step.title}</span>
+            <span className="how-text">{step.text}</span>
+          </li>
+        ))}
+      </ol>
+
+      <Title as="h2" size="md" tone="sun">
+        The games
+      </Title>
+      <div className="filters" role="radiogroup" aria-label="Show games">
+        {(["all", ...GAME_CATEGORIES] as const).map((c) => {
+          const count = c === "all" ? GAME_IDS.length : GAME_IDS.filter((id) => GAMES[id].categories.includes(c)).length;
+          return (
+            <button key={c} type="button" role="radio" aria-checked={filter === c} className={filter === c ? "filter on" : "filter"} onClick={() => setFilter(c)}>
+              {c === "all" ? "All" : CATEGORY_LABELS[c]}
+              <span className="filter-count">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+      <ul className="games">
+        {shown.map((id, i) => {
+          const game = GAMES[id];
+          return (
+            <li key={id} className="game" style={{ "--game": GAME_STYLE[id].color, rotate: `${(i % 2 ? 1 : -1) * 0.8}deg` }}>
+              <span className="tile" aria-hidden="true">
+                <Icon name={GAME_ICON[id]} />
+              </span>
+              <h3 className="name">{game.title}</h3>
+              <p className="tagline">{game.tagline}</p>
+              <span className="meta">About {game.minutes} min</span>
+              <div className="game-actions">
+                <RulesButton gameId={id} label="How to play" />
+                {/* A plain link: the room is made when the page loads, after a brick if you have none yet. */}
+                <a className="test-it" href={`/test/${id}`} title={`Play ${game.title} alone, with bots`}>
+                  Test it
+                </a>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+<style>
+  .showcase {
+    width: min(1180px, 100%);
+    margin: 0 auto;
+    padding: 12px 28px 56px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+  }
+  .how { list-style: none; margin: 0 0 18px; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; width: 100%; }
+  .how-step {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 24px 16px 16px;
+  }
+  .how-num {
+    position: absolute;
+    top: -18px;
+    left: 14px;
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    font-size: 20px;
+    background: var(--sun);
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+  }
+  .how-title { font-family: var(--font-display); font-size: 20px; }
+  .how-text { font-size: 15px; color: var(--muted); }
+
+  .filters { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: -8px; }
+  .filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: inherit;
+    font-weight: 900;
+    font-size: 15px;
+    color: var(--ink);
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 6px 8px 6px 14px;
+    cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  .filter:hover { transform: translateY(-1px); }
+  .filter:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+  .filter.on { background: var(--sun); }
+  .filter:focus-visible { outline: 4px solid var(--sun); outline-offset: 2px; }
+  .filter-count { min-width: 22px; text-align: center; font-size: 12px; background: var(--mist); border: 2px solid var(--ink); border-radius: 999px; padding: 0 6px; }
+  .on .filter-count { background: var(--paper); }
+  .games { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; width: 100%; }
+  .game {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 18px;
+    transition: rotate 0.2s, translate 0.2s;
+  }
+  .game:hover { rotate: 0deg !important; translate: 0 -4px; }
+  .tile {
+    width: 64px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    background: var(--game);
+    border: var(--line) solid var(--ink);
+    border-radius: 18px;
+    box-shadow: inset -6px -6px 0 rgba(0, 0, 0, 0.14);
+  }
+  .name { font-family: var(--font-display); font-weight: 400; font-size: 24px; line-height: 1.05; }
+  .tagline { font-size: 15px; color: var(--muted); flex-grow: 1; }
+  .meta { font-weight: 900; font-size: 14px; }
+  .game-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .test-it {
+    font-family: var(--font-display);
+    font-size: 16px;
+    color: var(--ink);
+    text-decoration: none;
+    background: var(--game);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 6px 14px;
+  }
+  .test-it:active { translate: 0 3px; box-shadow: 0 1px 0 var(--ink); }
+
+  @media (width < 1000px) {
+    .how, .games { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (width < 560px) {
+    .how, .games { grid-template-columns: minmax(0, 1fr); }
+    .showcase { padding: 8px 16px 40px; }
+  }
+</style>

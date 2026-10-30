@@ -1,0 +1,137 @@
+import type { Avatar } from "@brick/game";
+import { useEffect, useState } from "react";
+import { Form, useNavigation } from "react-router";
+import { forgetKey, recallKey } from "../../lib/recovery-key";
+import { BrickBuilder } from "../home/BrickBuilder.stsx";
+import { KeyReveal } from "../home/KeyReveal.stsx";
+import { PageShell } from "../PageShell.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Field } from "../ui/Field.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Title } from "../ui/Title.stsx";
+
+export function ProfileScreen({
+  player,
+  saved,
+  newKey,
+  errors,
+}: {
+  player: { nickname: string; avatar: Avatar };
+  saved: boolean;
+  newKey: string | null;
+  errors: { update?: string | null; restore?: string | null };
+}) {
+  const navigation = useNavigation();
+  const busy = navigation.state !== "idle";
+  const [storedKey, setStoredKey] = useState<string | null>(null);
+  const [showKey, setShowKey] = useState(false);
+  const [revealed, setRevealed] = useState<string | null>(null);
+
+  useEffect(() => setStoredKey(recallKey()), []);
+  useEffect(() => {
+    if (newKey) setRevealed(newKey);
+  }, [newKey]);
+
+  return (
+    <PageShell>
+      <Title as="h1" size="lg">
+        My brick
+      </Title>
+
+      <Panel pad="lg" className="section">
+        <Form method="post" className="stack">
+          <input type="hidden" name="intent" value="update" />
+          <BrickBuilder defaultNickname={player.nickname} defaultAvatar={player.avatar} error={errors.update} />
+          <div className="row">
+            <Button type="submit" size="lg" disabled={busy}>
+              Save my brick
+            </Button>
+            {saved ? <span className="saved">Saved!</span> : null}
+          </div>
+        </Form>
+      </Panel>
+
+      <Panel pad="lg" className="section">
+        <h2 className="heading">Recovery key</h2>
+        <p className="lead">Paste this key on another browser or device to play as this brick there.</p>
+        {storedKey ? (
+          <div className="row">
+            <output className="key">{showKey ? storedKey : "BRIK-••••-••••-••••"}</output>
+            <Button tone="paper" size="sm" onClick={() => setShowKey((s) => !s)}>
+              {showKey ? "Hide" : "Show"}
+            </Button>
+            <Button tone="paper" size="sm" onClick={() => navigator.clipboard?.writeText(storedKey)}>
+              Copy
+            </Button>
+          </div>
+        ) : (
+          <p className="muted">This device doesn't have a copy of your key.</p>
+        )}
+        <Form method="post" className="row">
+          <input type="hidden" name="intent" value="regenerate" />
+          <Button type="submit" tone="coral" size="sm" disabled={busy}>
+            Make a new key
+          </Button>
+          <span className="muted">The old key stops working.</span>
+        </Form>
+      </Panel>
+
+      <Panel pad="lg" className="section">
+        <h2 className="heading">Switch brick</h2>
+        <Form method="post" className="row end">
+          <input type="hidden" name="intent" value="restore" />
+          <Field label="Another brick's recovery key" name="key" placeholder="BRIK-XXXX-XXXX-XXXX" autoComplete="off" required error={errors.restore} className="grow" />
+          <Button type="submit" tone="teal" disabled={busy}>
+            Switch
+          </Button>
+        </Form>
+        <Form
+          method="post"
+          className="row"
+          onSubmit={(e) => {
+            if (!confirm("Sign out on this device? Make sure you saved your recovery key.")) e.preventDefault();
+            else forgetKey();
+          }}
+        >
+          <input type="hidden" name="intent" value="signout" />
+          <Button type="submit" tone="paper" size="sm">
+            Sign out on this device
+          </Button>
+        </Form>
+      </Panel>
+
+      {revealed ? (
+        <KeyReveal
+          recoveryKey={revealed}
+          onDone={() => {
+            setStoredKey(revealed);
+            setRevealed(null);
+          }}
+        />
+      ) : null}
+    </PageShell>
+  );
+}
+
+<style>
+  .section { display: flex; flex-direction: column; gap: 14px; }
+  .stack { display: flex; flex-direction: column; gap: 20px; }
+  .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .end { align-items: flex-end; }
+  .grow { flex: 1 1 280px; }
+  .heading { font-family: var(--font-display); font-weight: 400; font-size: 28px; }
+  .lead { font-size: 17px; }
+  .muted { color: var(--muted); font-size: 15px; }
+  .saved { font-weight: 900; color: var(--teal-ink); animation: pop 0.4s cubic-bezier(0.2, 1.8, 0.4, 1); }
+  .key {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 800;
+    font-size: 22px;
+    letter-spacing: 2px;
+    background: var(--sun-soft);
+    border: 3px dashed var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 8px 14px;
+  }
+  @keyframes pop { from { scale: 0.4; opacity: 0; } }
+</style>

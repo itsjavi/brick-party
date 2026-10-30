@@ -1,0 +1,98 @@
+import { GAMES, type RoomSummary } from "@brick/game";
+import { Link } from "react-router";
+
+export function phaseLabel(room: RoomSummary): string {
+  if (room.phase === "lobby") return "In the lobby";
+  if (room.phase === "report") return "Wrapping up";
+  const game = room.gameId ? GAMES[room.gameId as keyof typeof GAMES] : null;
+  return game ? `Playing ${game.title}` : "Playing";
+}
+
+/** "3 players", with how many stepped away, if any. */
+export function playersLabel({ players, away }: RoomSummary): string {
+  const count = `${players} ${players === 1 ? "player" : "players"}`;
+  if (!away) return count;
+  return away === players ? `${count}, away` : `${count}, ${away} away`;
+}
+
+/** Live list of rooms anyone can hop into, from `useOpenRooms` (null while it loads). */
+export function OpenRooms({ rooms }: { rooms: RoomSummary[] | null }) {
+  return (
+    <section className="rooms" aria-labelledby="open-rooms">
+      <h2 id="open-rooms" className="heading">
+        Open rooms
+      </h2>
+      {rooms === null ? (
+        <p className="empty">Looking for parties...</p>
+      ) : rooms.length === 0 ? (
+        <p className="empty">No rooms right now. Start one and share the code!</p>
+      ) : (
+        <ul className="list">
+          {rooms.map((room) => (
+            <li key={room.code} className="row">
+              <span className="code">{room.code}</span>
+              <span className="info">
+                <span className="count">{playersLabel(room)}</span>
+                <span className="meta">{phaseLabel(room)}</span>
+              </span>
+              <Link className="join" to={`/r/${room.code}`}>
+                Join
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+<style>
+  .rooms {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 16px 18px;
+    min-height: 0;
+  }
+  .heading { font-family: var(--font-display); font-weight: 400; font-size: 24px; }
+  .empty { color: var(--muted); font-size: 16px; }
+  .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 230px; overflow-y: auto; }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    background: var(--mist);
+    padding: 8px 10px;
+  }
+  .code {
+    font-family: var(--font-display);
+    font-size: 24px;
+    letter-spacing: 3px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 10px;
+    padding: 2px 8px;
+  }
+  .info { display: flex; flex-direction: column; min-width: 0; flex-grow: 1; }
+  .count { font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { font-size: 14px; color: var(--muted); }
+  .join {
+    font-family: var(--font-display);
+    font-size: 18px;
+    color: var(--ink);
+    text-decoration: none;
+    background: var(--sun);
+    border: 3px solid var(--ink);
+    border-radius: 12px;
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 6px 14px;
+  }
+  .join:hover { transform: translateY(-2px); }
+  .join:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+</style>

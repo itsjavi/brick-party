@@ -1,0 +1,15 @@
+# Copy to .dev.vars for local development. In production use `wrangler secret put <NAME>`.
+# Signs the player session cookie.
+SESSION_SECRET=dev-session-secret-change-me
+# Signs room tokens (web app) and verifies them (party server).
+GAME_JWT_SECRET=dev-game-secret-change-me
+# Claude writes prompts and judges only when this is "true" and ANTHROPIC_API_KEY is set.
+# Otherwise games use the hand-written packs and the fuzzy judge.
+AI_ENABLED=false
+ANTHROPIC_API_KEY=
+# Estimated Claude spend allowed per UTC day, in US dollars.
+AI_DAILY_BUDGET_USD=3
+# Turnstile on new players: on when both keys are set. Empty: no check. Cloudflare's test keys
+# (always pass, work on localhost) are 1x00000000000000000000AA and 1x0000000000000000000000000000000AA.
+TURNSTILE_SITE_KEY=
+TURNSTILE_SECRET_KEY=

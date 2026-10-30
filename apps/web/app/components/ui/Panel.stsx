@@ -1,0 +1,53 @@
+import type { HTMLAttributes, ReactNode } from "react";
+
+/** A white plastic plate with a thick outline and a hard drop shadow. */
+export function Panel({
+  children,
+  tone = "paper",
+  tilt = 0,
+  pad = "md",
+  className,
+  style,
+  ...rest
+}: HTMLAttributes<HTMLDivElement> & {
+  children: ReactNode;
+  tone?: "paper" | "mist" | "sun" | "teal" | "coral" | "grape" | "lime";
+  tilt?: number;
+  pad?: "sm" | "md" | "lg";
+}) {
+  return (
+    <div
+      {...rest}
+      className={["panel", `tone-${tone}`, `pad-${pad}`, className ?? ""].join(" ")}
+      style={{ ...style, rotate: tilt ? `${tilt}deg` : undefined }}
+    >
+      {children}
+    </div>
+  );
+}
+
+<style>
+  .panel {
+    --bg: var(--paper);
+    position: relative;
+    background: var(--bg);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+  }
+  .tone-paper { --bg: var(--paper); }
+  .tone-mist { --bg: var(--mist); }
+  .tone-sun { --bg: var(--sun); }
+  .tone-teal { --bg: var(--teal); }
+  .tone-coral { --bg: var(--coral); }
+  .tone-grape { --bg: var(--grape); }
+  .tone-lime { --bg: var(--lime); }
+  .pad-sm { padding: 12px 16px; border-radius: var(--radius); box-shadow: var(--lift-sm); }
+  .pad-md { padding: 20px 24px; }
+  .pad-lg { padding: 28px 32px; }
+
+  @media (width < 700px) {
+    .pad-md { padding: 16px; }
+    .pad-lg { padding: 20px; }
+  }
+</style>

@@ -1,0 +1,88 @@
+import { GAMES, type GameId } from "@brick/game";
+import type { ReactNode } from "react";
+import { GAME_ICON } from "../../lib/icons";
+import { GAME_STYLE } from "../games/types";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+
+/** A game's title card, and optionally its rules. The full rules get their own screen before each game. */
+export function NextUp({
+  gameId,
+  label = "Next up",
+  compact = false,
+  children,
+}: {
+  gameId: GameId;
+  label?: string;
+  compact?: boolean;
+  children?: ReactNode;
+}) {
+  const game = GAMES[gameId];
+  return (
+    <Panel pad="lg" className="card">
+      <div className="head">
+        <span className="tile" style={{ background: GAME_STYLE[gameId].color }} aria-hidden="true">
+          <Icon name={GAME_ICON[gameId]} />
+        </span>
+        <div className="names">
+          <span className="label">{label}</span>
+          <h2 className="name">{game.title}</h2>
+          <p className="tagline">{game.tagline}</p>
+        </div>
+      </div>
+      {compact ? null : (
+      <ol className="rules">
+        {game.rules.map((rule, i) => (
+          <li key={i} className="rule">
+            <span className="num" aria-hidden="true">
+              {i + 1}
+            </span>
+            {rule}
+          </li>
+        ))}
+      </ol>
+      )}
+      {children}
+    </Panel>
+  );
+}
+
+<style>
+  .card { display: flex; flex-direction: column; gap: 18px; width: min(720px, 100%); }
+  .head { display: flex; align-items: center; gap: 18px; }
+  .tile {
+    width: 84px;
+    height: 84px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 42px;
+    border: var(--line) solid var(--ink);
+    border-radius: 22px;
+    box-shadow: var(--lift-sm), inset -8px -8px 0 rgba(0, 0, 0, 0.14);
+    animation: wiggle 2.4s ease-in-out infinite;
+  }
+  .names { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .label { font-weight: 900; font-size: 14px; text-transform: uppercase; letter-spacing: 2px; color: var(--coral-ink); }
+  .name { font-family: var(--font-display); font-weight: 400; font-size: 40px; line-height: 1.05; }
+  .tagline { font-size: 18px; color: var(--muted); }
+  .rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .rule { display: flex; gap: 12px; align-items: flex-start; font-size: 18px; }
+  .num {
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    background: var(--sun);
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+  }
+  @keyframes wiggle {
+    0%, 100% { rotate: -6deg; }
+    50% { rotate: 6deg; }
+  }
+</style>

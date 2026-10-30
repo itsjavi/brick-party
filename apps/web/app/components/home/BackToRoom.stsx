@@ -1,0 +1,63 @@
+import type { RoomSummary } from "@brick/game";
+import { Link } from "react-router";
+import { phaseLabel, playersLabel } from "./OpenRooms.stsx";
+
+/** A way back to the room this browser was last in, while it's still open. */
+export function BackToRoom({ room }: { room: RoomSummary }) {
+  return (
+    <section className="back" aria-labelledby="back-to-room">
+      <span className="code">{room.code}</span>
+      <span className="info">
+        <span id="back-to-room" className="title">
+          Your room is still open
+        </span>
+        <span className="meta">
+          {playersLabel(room)} · {phaseLabel(room)}
+        </span>
+      </span>
+      <Link className="go" to={`/r/${room.code}`}>
+        Back in
+      </Link>
+    </section>
+  );
+}
+
+<style>
+  .back {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--sun-soft);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 12px 14px;
+  }
+  .code {
+    font-family: var(--font-display);
+    font-size: 26px;
+    letter-spacing: 3px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 10px;
+    padding: 2px 8px;
+  }
+  .info { display: flex; flex-direction: column; min-width: 0; flex-grow: 1; }
+  .title { font-weight: 900; font-size: 17px; }
+  .meta { font-size: 14px; color: var(--muted); }
+  .go {
+    font-family: var(--font-display);
+    font-size: 20px;
+    color: var(--ink);
+    text-decoration: none;
+    background: var(--teal);
+    border: 3px solid var(--ink);
+    border-radius: 12px;
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 6px 16px;
+    white-space: nowrap;
+  }
+  .go:hover { transform: translateY(-2px); }
+  .go:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+  .go:focus-visible { outline: 4px solid var(--sun); outline-offset: 2px; }
+</style>
