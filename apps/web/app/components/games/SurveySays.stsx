@@ -1,0 +1,612 @@
+import type { SurveySaysView } from "@brick/game";
+import { useEffect, useRef, useState } from "react";
+import { playSfx } from "../../lib/audio";
+import { useCountdown } from "../../lib/clock";
+import { useChangeSfx } from "../../lib/use-phase-sfx";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Title } from "../ui/Title.stsx";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+type Kind = SurveySaysView["question"]["kind"];
+type Pick = string | number | null;
+
+const BANNERS: Record<SurveySaysView["phase"], string> = {
+  answer: "Answer, then predict!",
+  results: "Survey says...!",
+  done: "That's a wrap",
+};
+
+const KIND_BADGE: Record<Kind, string> = {
+  who: "Who's most likely",
+  choice: "Pick one",
+  scale: "Rate it 0-10",
+};
+
+const ANSWER_PROMPT: Record<Kind, string> = {
+  who: "Who's your pick?",
+  choice: "What's your answer?",
+  scale: "What's your rating?",
+};
+
+const PREDICTION_PROMPT: Record<Kind, string> = {
+  who: "Who will the team pick?",
+  choice: "What will most people choose?",
+  scale: "What will the team's average be?",
+};
+
+const TICKS = Array.from({ length: 11 }, (_, n) => n);
+
+/** A pick as words: a player's or option's label, or the number itself. */
+function describe(view: SurveySaysView, value: string | number): string {
+  if (typeof value === "number") return String(value);
+  return view.question.options.find((o) => o.key === value)?.label ?? value;
+}
+
+export function SurveySays({ view, me, players, matchScore, act }: GameProps<SurveySaysView>) {
+  useMusic(view.phase === "answer" ? "think" : "reveal");
+  useChangeSfx(view.phase, (p) => (p === "results" ? "reveal" : "whoosh"));
+
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+  const previous = useRef(myPoints);
+  useEffect(() => {
+    if (myPoints > previous.current) playSfx("point");
+    previous.current = myPoints;
+  }, [myPoints]);
+
+  const [answer, setAnswer] = useState<Pick>(null);
+  const [prediction, setPrediction] = useState<Pick>(null);
+  const submitted = useRef(false);
+
+  useEffect(() => {
+    setAnswer(null);
+    setPrediction(null);
+    submitted.current = false;
+  }, [view.round]);
+
+  const kind = view.question.kind;
+  const canAnswer = view.phase === "answer" && me !== null && view.mySubmission === null;
+  const ready = answer !== null && prediction !== null;
+
+  const submit = () => {
+    if (submitted.current || answer === null || prediction === null) return;
+    submitted.current = true;
+    playSfx("pop");
+    act({ type: "submit", answer, prediction });
+  };
+
+  // When time runs out, send the picks if both were made.
+  const { seconds } = useCountdown(view.phase === "answer" ? view.endsAt : null);
+  useEffect(() => {
+    if (canAnswer && ready && seconds === 0) submit();
+  });
+
+  return (
+    <div className="ss">
+      <GameHud
+        gameId="survey-says"
+        round={`Question ${view.round + 1} of ${view.totalRounds}`}
+        banner={BANNERS[view.phase]}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={view.phase === "answer"}
+        score={matchScore + myPoints}
+      />
+
+      <section className={view.phase === "answer" ? "poll big" : "poll"} key={view.round}>
+        <span className="kind">{KIND_BADGE[kind]}</span>
+        <p className="question">{view.question.text}</p>
+        {kind === "scale" && view.question.minLabel && view.question.maxLabel ? (
+          <p className="range-hint">
+            0 = {view.question.minLabel} · 10 = {view.question.maxLabel}
+          </p>
+        ) : null}
+      </section>
+
+      {canAnswer ? (
+        <section className="steps" aria-label="Your answer and prediction">
+          <Panel className="step">
+            <h2 className="step-title">
+              <span className="step-num">1</span>
+              {ANSWER_PROMPT[kind]}
+            </h2>
+            <Picker view={view} players={players} value={answer} onChange={setAnswer} step={1} name="answer" />
+          </Panel>
+          <Panel className="step" tone="mist">
+            <h2 className="step-title">
+              <span className="step-num">2</span>
+              {PREDICTION_PROMPT[kind]}
+            </h2>
+            <Picker view={view} players={players} value={prediction} onChange={setPrediction} step={0.5} name="prediction" />
+          </Panel>
+          <div className="submit-row">
+            <Button size="lg" quiet disabled={!ready} onClick={submit}>
+              {ready ? "Lock it in" : answer === null ? "Pick your answer" : "Make your prediction"}
+            </Button>
+          </div>
+        </section>
+      ) : null}
+
+      {view.phase === "answer" && !canAnswer ? (
+        <section className="waiting">
+          {view.mySubmission ? (
+            <div className="locked">
+              <span className="locked-title">Locked in!</span>
+              <span>
+                You said <b>{describe(view, view.mySubmission.answer)}</b>, and predicted <b>{describe(view, view.mySubmission.prediction)}</b>.
+              </span>
+            </div>
+          ) : (
+            <p className="locked">You're watching this one. Next game you're in!</p>
+          )}
+          <ul className="who-done" aria-label="Who has answered">
+            {players.map((p) => {
+              const done = view.submittedIds.includes(p.id);
+              return (
+                <li key={p.id} className={done ? "seat done" : "seat"}>
+                  <Brick avatar={p.avatar} size="sm" mood={done ? "happy" : "sleepy"} />
+                  <span className="seat-name">{p.name}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+
+      {(view.phase === "results" || view.phase === "done") && view.results ? (
+        <Results view={view} players={players} me={me} />
+      ) : null}
+    </div>
+  );
+}
+
+/** Player bricks, option buttons, or the 0-10 slider, depending on the question. */
+function Picker({
+  view,
+  players,
+  value,
+  onChange,
+  step,
+  name,
+}: {
+  view: SurveySaysView;
+  players: Seat[];
+  value: Pick;
+  onChange: (value: string | number) => void;
+  step: number;
+  name: string;
+}) {
+  const { kind, options, minLabel, maxLabel } = view.question;
+
+  if (kind === "scale") {
+    const current = typeof value === "number" ? value : 5;
+    return (
+      <div className="scale">
+        <div className="scale-value" aria-hidden="true">
+          {typeof value === "number" ? value : "?"}
+        </div>
+        <input
+          type="range"
+          className="slider"
+          min={0}
+          max={10}
+          step={step}
+          value={current}
+          aria-label={name === "answer" ? "Your rating from 0 to 10" : "Predicted team average from 0 to 10"}
+          aria-valuetext={typeof value === "number" ? String(value) : "not chosen yet"}
+          style={{ "--pct": `${current * 10}%` }}
+          onChange={(e) => onChange(Number(e.target.value))}
+          onPointerDown={() => typeof value !== "number" && onChange(current)}
+        />
+        <div className="ticks" aria-hidden="true">
+          {TICKS.map((n) => (
+            <button
+              key={n}
+              type="button"
+              tabIndex={-1}
+              className={value === n ? "tick hit" : "tick"}
+              onClick={() => {
+                playSfx("click");
+                onChange(n);
+              }}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+        <div className="scale-labels">
+          <span>{minLabel}</span>
+          <span>{maxLabel}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={kind === "who" ? "choices people" : "choices"} role="radiogroup" aria-label={name === "answer" ? "Your answer" : "Your prediction"}>
+      {options.map((o, i) => {
+        const on = value === o.key;
+        const seat = kind === "who" ? seatOf(players, o.key) : undefined;
+        return (
+          <button
+            key={o.key}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            className={on ? "choice on" : "choice"}
+            style={{ animationDelay: `${i * 40}ms` }}
+            onClick={() => {
+              playSfx("click");
+              onChange(o.key);
+            }}
+          >
+            {seat ? <Brick avatar={seat.avatar} size="xs" mood={on ? "wow" : "happy"} /> : null}
+            <span className="choice-label">{o.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The game-show board: a "Survey says..." beat, then the bars, then everyone's predictions. */
+function Results({ view, players, me }: { view: SurveySaysView; players: Seat[]; me: string | null }) {
+  const results = view.results!;
+  const kind = view.question.kind;
+  const max = Math.max(1, ...results.counts.map((c) => c.count));
+  const total = results.counts.reduce((sum, c) => sum + c.count, 0);
+  const predictions = [...results.predictions].sort((a, b) => b.points - a.points);
+
+  return (
+    <section className="results" aria-label="Results">
+      <Title as="p" size="lg" tone="sun" className="says">
+        Survey says...
+      </Title>
+
+      {kind === "scale" ? (
+        <Panel className="board">
+          <div className="histogram">
+            {results.counts.map((c, i) => (
+              <div key={c.key} className="column">
+                <span className="col-count" style={{ animationDelay: `${1.2 + i * 0.06}s` }}>
+                  {c.count || ""}
+                </span>
+                <span className="col-bar" style={{ "--h": `${(c.count / max) * 100}%`, animationDelay: `${0.9 + i * 0.06}s` }} />
+                <span className="col-label">{c.label}</span>
+              </div>
+            ))}
+            {results.average !== null && total > 0 ? (
+              <div className="average" style={{ "--x": `${(results.average / 10) * 100}%` }}>
+                <span className="avg-flag">Team average {results.average}</span>
+              </div>
+            ) : null}
+          </div>
+          <div className="scale-labels">
+            <span>{view.question.minLabel}</span>
+            <span>{view.question.maxLabel}</span>
+          </div>
+        </Panel>
+      ) : (
+        <Panel className="board">
+          <ol className="bars">
+            {results.counts.map((c, i) => {
+              const win = results.winners.includes(c.key);
+              const seat = kind === "who" ? seatOf(players, c.key) : undefined;
+              return (
+                <li key={c.key} className={win ? "bar-row win" : "bar-row"}>
+                  <span className="bar-label">
+                    {seat ? <Brick avatar={seat.avatar} size="xs" mood={win ? "wow" : "happy"} /> : null}
+                    <span className="bar-name">{c.label}</span>
+                    {win ? (
+                      <svg className="crown" viewBox="0 0 100 60" width="34" height="22" aria-label="Top answer" role="img">
+                        <path d="M8 56 L 8 14 L 30 34 L 50 4 L 70 34 L 92 14 L 92 56 Z" fill="#ffcc33" stroke="#1b1f3b" strokeWidth="8" strokeLinejoin="round" />
+                      </svg>
+                    ) : null}
+                  </span>
+                  <span className="track">
+                    <span className="fill" style={{ "--w": `${(c.count / max) * 100}%`, animationDelay: `${0.9 + i * 0.15}s` }} />
+                  </span>
+                  <span className="bar-count" style={{ animationDelay: `${1.3 + i * 0.15}s` }}>
+                    {c.count}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+          {total === 0 ? <p className="nobody">Nobody answered. The survey has been left on read.</p> : null}
+        </Panel>
+      )}
+
+      <Panel className="predictions" tone="mist">
+        <h2 className="pred-title">Predictions</h2>
+        <ul className="pred-list">
+          {predictions.map((p, i) => {
+            const seat = seatOf(players, p.playerId);
+            return (
+              <li key={p.playerId} className={p.playerId === me ? "pred mine" : "pred"} style={{ animationDelay: `${1.8 + i * 0.1}s` }}>
+                {seat ? <Brick avatar={seat.avatar} size="xs" mood={p.points > 0 ? "happy" : "sad"} /> : null}
+                <span className="pred-name">{seat?.name ?? "Someone"}</span>
+                <span className="pred-guess">guessed {describe(view, p.prediction)}</span>
+                <span className={p.points > 0 ? "pred-pts" : "pred-pts zero"}>+{p.points}</span>
+              </li>
+            );
+          })}
+        </ul>
+        {predictions.length === 0 ? <p className="nobody">No predictions this round.</p> : null}
+      </Panel>
+    </section>
+  );
+}
+
+<style>
+  .ss { display: flex; flex-direction: column; gap: 20px; }
+
+  .poll {
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 16px 26px 20px;
+    rotate: 0.5deg;
+    animation: drop 0.5s cubic-bezier(0.2, 1.5, 0.4, 1);
+  }
+  .kind {
+    display: inline-block;
+    font-weight: 900;
+    font-size: 13px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--paper);
+    background: var(--grape);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 2px 12px;
+  }
+  .question { font-family: var(--font-display); font-size: 28px; line-height: 1.15; margin-top: 8px; }
+  .big .question { font-size: 36px; }
+  .range-hint { font-size: 16px; color: var(--muted); margin-top: 6px; }
+
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px 24px;
+  }
+  .step { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .step-title { display: flex; align-items: center; gap: 10px; font-family: var(--font-display); font-weight: 400; font-size: 24px; line-height: 1.1; }
+  .step-num {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--sun);
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+  }
+  .submit-row { grid-column: 1 / -1; display: flex; justify-content: center; }
+
+  .choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .people { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .choice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 56px;
+    text-align: left;
+    font-family: var(--font-body);
+    font-weight: 900;
+    font-size: 18px;
+    line-height: 1.15;
+    color: var(--ink);
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: 0 5px 0 var(--ink);
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: transform 0.1s, background 0.12s, box-shadow 0.1s;
+    animation: deal 0.35s cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
+  }
+  .people .choice { flex-direction: column; justify-content: flex-end; text-align: center; padding-top: 4px; }
+  .choice:hover { transform: translateY(-3px); }
+  .choice:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--ink); }
+  .on { background: var(--sun); transform: translateY(-4px); box-shadow: 0 9px 0 var(--ink); }
+  .choice-label { min-width: 0; overflow-wrap: anywhere; }
+
+  .scale { display: flex; flex-direction: column; gap: 10px; }
+  .scale-value {
+    align-self: center;
+    min-width: 84px;
+    text-align: center;
+    font-family: var(--font-display);
+    font-size: 48px;
+    line-height: 1;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 6px 14px 10px;
+  }
+  .slider {
+    --pct: 50%;
+    appearance: none;
+    width: 100%;
+    height: 26px;
+    margin: 6px 0;
+    border: var(--line) solid var(--ink);
+    border-radius: 999px;
+    background: linear-gradient(to right, var(--grape) var(--pct), var(--paper) var(--pct));
+    cursor: pointer;
+  }
+  .slider:focus-visible { outline: 4px solid var(--sun); outline-offset: 3px; }
+  .slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: var(--sun);
+    border: var(--line) solid var(--ink);
+    box-shadow: 0 4px 0 var(--ink);
+  }
+  .slider::-moz-range-thumb {
+    width: 34px;
+    height: 34px;
+    border-radius: 12px;
+    background: var(--sun);
+    border: var(--line) solid var(--ink);
+    box-shadow: 0 4px 0 var(--ink);
+  }
+  .ticks { display: grid; grid-template-columns: repeat(11, minmax(0, 1fr)); gap: 4px; }
+  .tick {
+    font-family: var(--font-display);
+    font-size: 20px;
+    color: var(--ink);
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 10px;
+    padding: 4px 0;
+    cursor: pointer;
+  }
+  .hit { background: var(--sun); }
+  .scale-labels { display: flex; justify-content: space-between; gap: 12px; font-weight: 900; font-size: 15px; color: var(--muted); }
+
+  .waiting { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+  .locked {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    font-size: 20px;
+    text-align: center;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 12px 22px;
+  }
+  .locked-title { font-family: var(--font-display); font-size: 28px; color: var(--teal-ink); }
+  .who-done { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; }
+  .seat { display: flex; flex-direction: column; align-items: center; gap: 4px; opacity: 0.5; transition: opacity 0.3s; }
+  .done { opacity: 1; animation: hop 0.5s ease-out; }
+  .seat-name { font-weight: 900; font-size: 14px; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; }
+
+  .results { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 20px 24px; align-items: start; }
+  .says { grid-column: 1 / -1; text-align: center; animation: says 0.9s cubic-bezier(0.2, 1.6, 0.4, 1); }
+  .board { display: flex; flex-direction: column; gap: 12px; }
+
+  .bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .bar-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.6fr) 44px;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 10px;
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    background: var(--mist);
+  }
+  .win { background: var(--sun-soft); }
+  .bar-label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .bar-name { font-weight: 900; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crown { flex-shrink: 0; animation: bump 0.5s 1.6s cubic-bezier(0.2, 1.8, 0.4, 1) backwards; }
+  .track { height: 28px; border: 3px solid var(--ink); border-radius: 10px; background: var(--paper); overflow: hidden; }
+  .fill {
+    display: block;
+    height: 100%;
+    width: var(--w);
+    background: var(--grape);
+    border-right: 3px solid var(--ink);
+    transform-origin: left;
+    animation: grow-x 0.8s cubic-bezier(0.2, 1.1, 0.3, 1) backwards;
+  }
+  .win .fill { background: var(--sun); }
+  .bar-count { font-family: var(--font-display); font-size: 26px; text-align: right; animation: bump 0.4s cubic-bezier(0.2, 1.8, 0.4, 1) backwards; }
+
+  .histogram {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(11, minmax(0, 1fr));
+    gap: 6px;
+    height: 220px;
+    align-items: end;
+    padding-top: 34px;
+  }
+  .column { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; height: 100%; }
+  .col-count { font-family: var(--font-display); font-size: 18px; min-height: 22px; animation: bump 0.4s cubic-bezier(0.2, 1.8, 0.4, 1) backwards; }
+  .col-bar {
+    width: 100%;
+    height: max(6px, calc(var(--h) - 52px));
+    background: var(--grape);
+    border: 3px solid var(--ink);
+    border-radius: 8px 8px 0 0;
+    transform-origin: bottom;
+    animation: grow-y 0.7s cubic-bezier(0.2, 1.1, 0.3, 1) backwards;
+  }
+  .col-label { font-family: var(--font-display); font-size: 18px; }
+  .average {
+    position: absolute;
+    top: 0;
+    bottom: 28px;
+    left: calc(var(--x) * 0.91 + 4.5%);
+    width: 0;
+    border-left: 4px dashed var(--coral);
+    animation: drop 0.6s 1.6s cubic-bezier(0.2, 1.5, 0.4, 1) backwards;
+  }
+  .avg-flag {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    translate: -50% 0;
+    white-space: nowrap;
+    font-weight: 900;
+    font-size: 14px;
+    color: var(--paper);
+    background: var(--coral);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 2px 10px;
+  }
+
+  .predictions { display: flex; flex-direction: column; gap: 10px; }
+  .pred-title { font-family: var(--font-display); font-weight: 400; font-size: 24px; }
+  .pred-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .pred {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 10px 6px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    animation: deal 0.4s cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
+  }
+  .mine { background: var(--sun-soft); }
+  .pred-name { font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+  .pred-guess { flex-grow: 1; min-width: 0; font-size: 14px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pred-pts { font-family: var(--font-display); font-size: 22px; color: var(--teal-ink); }
+  .zero { color: var(--muted); }
+  .nobody { font-size: 16px; color: var(--muted); text-align: center; }
+
+  @keyframes drop { from { translate: 0 -60px; opacity: 0; } }
+  @keyframes deal { from { translate: 0 60px; opacity: 0; scale: 0.85; } }
+  @keyframes hop { 40% { translate: 0 -10px; } }
+  @keyframes bump { from { scale: 0; opacity: 0; } }
+  @keyframes grow-x { from { scale: 0 1; } }
+  @keyframes grow-y { from { scale: 1 0; } }
+  @keyframes says {
+    0% { scale: 0.3; opacity: 0; rotate: -8deg; }
+    60% { scale: 1.15; opacity: 1; rotate: 3deg; }
+    100% { scale: 1; rotate: 0deg; }
+  }
+
+  @media (width < 900px) {
+    .steps, .results { grid-template-columns: minmax(0, 1fr); }
+    .question, .big .question { font-size: 24px; }
+    .bar-row { grid-template-columns: minmax(90px, 1fr) minmax(0, 1.2fr) 36px; }
+    .histogram { height: 180px; }
+    .tick { font-size: 15px; }
+  }
+</style>

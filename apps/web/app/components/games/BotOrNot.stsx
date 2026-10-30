@@ -1,0 +1,776 @@
+import type { BotOrNotView, PlayerId } from "@brick/game";
+import { useEffect, useRef, useState } from "react";
+import { playSfx } from "../../lib/audio";
+import { useCountdown } from "../../lib/clock";
+import { useChangeSfx } from "../../lib/use-phase-sfx";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+function banner(view: BotOrNotView): string {
+  switch (view.phase) {
+    case "answer":
+      return view.youAreBot ? "Blend in, Bot!" : "Answer the survey!";
+    case "discuss":
+      return "Who's the Bot?";
+    case "vote":
+      return "Accuse someone!";
+    case "guess":
+      return "Bot busted!";
+    case "judging":
+      return "Judging the guess...";
+    case "results":
+      return view.reveal?.caught ? "Caught red-handed!" : "The Bot got away!";
+    case "done":
+      return "That's a wrap";
+  }
+}
+
+function moodFor(phase: BotOrNotView["phase"]) {
+  if (phase === "answer") return "think" as const;
+  if (phase === "results" || phase === "done") return "reveal" as const;
+  return "tension" as const;
+}
+
+export function BotOrNot({ view, me, players, matchScore, ai, act }: GameProps<BotOrNotView>) {
+  useMusic(moodFor(view.phase));
+  useChangeSfx(view.phase, (p) => (p === "results" || p === "guess" ? "reveal" : "whoosh"));
+
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+  const previousPoints = useRef(myPoints);
+  useEffect(() => {
+    if (myPoints > previousPoints.current) playSfx("point");
+    previousPoints.current = myPoints;
+  }, [myPoints]);
+
+  const [answerDraft, setAnswerDraft] = useState("");
+  const [guessDraft, setGuessDraft] = useState("");
+  const answered = useRef(false);
+  const guessed = useRef(false);
+
+  useEffect(() => {
+    setAnswerDraft("");
+    setGuessDraft("");
+    answered.current = false;
+    guessed.current = false;
+  }, [view.round]);
+
+  const canAnswer = view.phase === "answer" && me !== null && view.myAnswer === null;
+  const canGuess = view.phase === "guess" && me !== null && me === view.botId && view.guess === null;
+
+  const submitAnswer = () => {
+    const text = answerDraft.trim();
+    if (!canAnswer || answered.current || !text) return;
+    answered.current = true;
+    act({ type: "answer", text });
+    playSfx("pop");
+  };
+  const submitGuess = () => {
+    const text = guessDraft.trim();
+    if (!canGuess || guessed.current || !text) return;
+    guessed.current = true;
+    act({ type: "guess", text });
+    playSfx("pop");
+  };
+
+  // When time runs out, send whatever the player typed.
+  const { seconds } = useCountdown(view.phase === "answer" || view.phase === "guess" ? view.endsAt : null);
+  useEffect(() => {
+    if (seconds !== 0) return;
+    if (canAnswer) submitAnswer();
+    if (canGuess) submitGuess();
+  });
+
+  const mySeat = seatOf(players, me);
+  const bot = seatOf(players, view.botId);
+
+  return (
+    <div className="bon">
+      <GameHud
+        gameId="bot-or-not"
+        round={`Round ${view.round + 1} of ${view.totalRounds}`}
+        banner={banner(view)}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={view.phase === "answer" || view.phase === "vote" || view.phase === "guess"}
+        score={matchScore + myPoints}
+      />
+
+      {view.phase === "answer" ? (
+        <>
+          {view.youAreBot ? (
+            <div className="bot-banner" key={`bot-${view.round}`}>
+              {mySeat ? <Brick avatar={mySeat.avatar} size="lg" mood="sly" className="bot-brick" /> : null}
+              <div className="bot-copy">
+                <p className="bot-title">You're the Bot</p>
+                <p className="bot-sub">Your question is slightly different. Answer so you blend in.</p>
+              </div>
+            </div>
+          ) : null}
+
+          <section className={view.youAreBot ? "question big decoy" : "question big"} key={`q-${view.round}`}>
+            <span className="kicker">{view.youAreBot ? "Your question (shh)" : `Survey question · Round ${view.round + 1}`}</span>
+            <p className="question-text">{view.question}</p>
+            {!view.youAreBot ? <p className="hint">Someone here got a different question...</p> : null}
+          </section>
+
+          {canAnswer ? (
+            <form
+              className="entry"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitAnswer();
+              }}
+            >
+              <label className="sr-only" htmlFor="bon-answer">
+                Your answer
+              </label>
+              <input
+                id="bon-answer"
+                className="text-input"
+                maxLength={80}
+                autoComplete="off"
+                autoFocus
+                value={answerDraft}
+                placeholder="A word, a name, a number..."
+                onChange={(e) => setAnswerDraft(e.target.value)}
+              />
+              <Button type="submit" size="lg" quiet disabled={!answerDraft.trim()}>
+                Submit
+              </Button>
+            </form>
+          ) : (
+            <section className="waiting">
+              <p className="locked">
+                {view.myAnswer ? (
+                  <>
+                    Locked in: <b>{view.myAnswer}</b>
+                  </>
+                ) : (
+                  "You're watching this one. Next game you're in!"
+                )}
+              </p>
+              <SeatRow players={players} doneIds={view.answeredIds} label="Who has answered" />
+            </section>
+          )}
+        </>
+      ) : null}
+
+      {view.phase === "discuss" || view.phase === "vote" ? (
+        <>
+          <section className="question small">
+            <span className="kicker">{view.youAreBot ? "Your (decoy) question" : "The question"}</span>
+            <p className="question-text">{view.question}</p>
+          </section>
+          <p className="instructions">
+            {view.phase === "discuss"
+              ? "Discuss! Who answered a different question? Don't say the question out loud."
+              : "Tap the player you think is the Bot. You can change your mind until time runs out. A tie for the most votes lets the Bot escape."}
+          </p>
+          <section className="answers" aria-label="Everyone's answers">
+            {(view.answers ?? []).map((a, i) => {
+              const seat = seatOf(players, a.playerId);
+              if (!seat) return null;
+              return (
+                <AnswerCard
+                  key={a.playerId}
+                  seat={seat}
+                  text={a.text}
+                  index={i}
+                  mine={a.playerId === me}
+                  ready={view.phase === "discuss" && view.readyIds.includes(a.playerId)}
+                  accusable={view.phase === "vote" && me !== null && a.playerId !== me}
+                  accused={view.phase === "vote" && view.myVote === a.playerId}
+                  onAccuse={() => {
+                    playSfx("vote");
+                    act({ type: "vote", targetId: a.playerId });
+                  }}
+                />
+              );
+            })}
+          </section>
+          <div className="footer-row">
+            {view.phase === "discuss" ? (
+              <>
+                {me && !view.readyIds.includes(me) ? (
+                  <Button tone="teal" size="lg" onClick={() => act({ type: "ready" })}>
+                    Ready to vote
+                  </Button>
+                ) : null}
+                <span className="tally">
+                  Ready: {view.readyIds.length} / {players.length}
+                </span>
+              </>
+            ) : (
+              <span className="tally">
+                Votes in: {view.votedIds.length} / {players.length}
+              </span>
+            )}
+          </div>
+        </>
+      ) : null}
+
+      {view.phase === "guess" || view.phase === "judging" ? (
+        <section className="busted">
+          {bot ? (
+            <div className="busted-hero">
+              <span className="spotlight" aria-hidden="true" />
+              <Brick avatar={bot.avatar} size="xl" mood="wow" className="caught-brick" />
+              <span className="stamp" aria-hidden="true">
+                Busted
+              </span>
+              <p className="busted-name">{bot.id === me ? "You were" : `${bot.name} was`} the Bot!</p>
+            </div>
+          ) : null}
+
+          {view.phase === "guess" ? (
+            canGuess ? (
+              <Panel className="guess-panel">
+                <p className="guess-lead">One last chance: guess the real question to steal 250 points.</p>
+                <form
+                  className="entry"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    submitGuess();
+                  }}
+                >
+                  <label className="sr-only" htmlFor="bon-guess">
+                    Guess the real question
+                  </label>
+                  <input
+                    id="bon-guess"
+                    className="text-input"
+                    maxLength={160}
+                    autoComplete="off"
+                    autoFocus
+                    value={guessDraft}
+                    placeholder="Guess the real question..."
+                    onChange={(e) => setGuessDraft(e.target.value)}
+                  />
+                  <Button type="submit" size="lg" quiet disabled={!guessDraft.trim()}>
+                    Guess
+                  </Button>
+                </form>
+              </Panel>
+            ) : (
+              <p className="status-line">
+                <Dots /> The Bot is guessing the real question...
+              </p>
+            )
+          ) : (
+            <div className="judging">
+              {view.guess ? <p className="guess-quote">“{view.guess}”</p> : null}
+              <p className="status-line">
+                <Dots /> {ai ? "Claude is judging the guess..." : "Judging the guess..."}
+              </p>
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {(view.phase === "results" || view.phase === "done") && view.reveal ? (
+        <Results view={view} players={players} me={me} bot={bot} />
+      ) : null}
+    </div>
+  );
+}
+
+function AnswerCard({
+  seat,
+  text,
+  index,
+  mine,
+  ready = false,
+  accusable = false,
+  accused = false,
+  bot = false,
+  accusers = [],
+  points = 0,
+  delayMs = 0,
+  onAccuse,
+}: {
+  seat: Seat;
+  text: string;
+  index: number;
+  mine: boolean;
+  ready?: boolean;
+  accusable?: boolean;
+  accused?: boolean;
+  /** Marks the revealed Bot's answer. */
+  bot?: boolean;
+  /** At the reveal: who voted for this player. */
+  accusers?: Seat[];
+  /** At the reveal: what this player scored in the round. */
+  points?: number;
+  /** Holds the deal-in animation back, so the cards land after the rest of the screen. */
+  delayMs?: number;
+  onAccuse?: () => void;
+}) {
+  const body = (
+    <>
+      <span className="card-head">
+        <Brick avatar={seat.avatar} size="sm" mood={accused ? "wow" : bot ? "sly" : "happy"} />
+        <span className="card-name">
+          {seat.name}
+          {mine ? <span className="you"> (you)</span> : null}
+        </span>
+        {bot ? <span className="bot-tag">Bot</span> : null}
+        {ready ? <span className="ready-badge">Ready</span> : null}
+      </span>
+      <span className={text ? "card-answer" : "card-answer silent"}>{text ? `“${text}”` : "Stayed silent... suspicious"}</span>
+      {accusers.length || points ? (
+        <span className="card-foot">
+          {accusers.length ? (
+            <span className="accusers" aria-label={`Accused by ${accusers.map((a) => a.name).join(", ")}`}>
+              <span className="accusers-label" aria-hidden="true">
+                Accused by
+              </span>
+              {accusers.map((a) => (
+                <Brick key={a.id} avatar={a.avatar} size="xs" />
+              ))}
+            </span>
+          ) : null}
+          {points ? <span className="card-points">+{points}</span> : null}
+        </span>
+      ) : null}
+      {accused ? <span className="accused-stamp">Accused</span> : null}
+    </>
+  );
+  const style = { rotate: `${((index * 7) % 5) - 2}deg`, animationDelay: `${delayMs + index * 70}ms` };
+  if (accusable && onAccuse) {
+    return (
+      <button
+        type="button"
+        className={accused ? "card accuse accused" : "card accuse"}
+        style={style}
+        aria-pressed={accused}
+        aria-label={`Accuse ${seat.name} of being the Bot`}
+        onClick={onAccuse}
+      >
+        {body}
+      </button>
+    );
+  }
+  return (
+    <article className={bot ? "card bot-card" : mine ? "card mine" : "card"} style={style}>
+      {body}
+    </article>
+  );
+}
+
+function SeatRow({ players, doneIds, label }: { players: Seat[]; doneIds: PlayerId[]; label: string }) {
+  return (
+    <ul className="seats" aria-label={label}>
+      {players.map((p) => {
+        const done = doneIds.includes(p.id);
+        return (
+          <li key={p.id} className={done ? "seat seat-done" : "seat"}>
+            <Brick avatar={p.avatar} size="sm" mood={done ? "happy" : "sleepy"} />
+            <span className="seat-name">{p.name}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function Dots() {
+  return (
+    <span className="dots" aria-hidden="true">
+      <span className="dot" />
+      <span className="dot" />
+      <span className="dot" />
+    </span>
+  );
+}
+
+function Results({ view, players, me, bot }: { view: BotOrNotView; players: Seat[]; me: PlayerId | null; bot: Seat | undefined }) {
+  const reveal = view.reveal!;
+  const accusersOf = (id: PlayerId) =>
+    (reveal.tally.find((t) => t.targetId === id)?.voters ?? []).flatMap((v) => seatOf(players, v) ?? []);
+  // Why the Bot got away, since 2 votes can still be an escape (DECISION-15).
+  const botVotes = reveal.tally.find((t) => t.targetId === view.botId)?.voters.length ?? 0;
+  const escape =
+    botVotes === 0
+      ? "Nobody suspected a thing."
+      : botVotes === reveal.tally[0]?.voters.length
+        ? "Tied for the most votes, and a tie lets the Bot escape."
+        : "Someone else got more votes.";
+
+  return (
+    <section className="results" aria-label="Round results">
+      <div className={reveal.caught ? "verdict-hero caught" : "verdict-hero escaped"}>
+        {bot ? <Brick avatar={bot.avatar} size="xl" mood={reveal.caught ? "sad" : "sly"} className="reveal-brick" /> : null}
+        <div className="verdict-copy">
+          <p className="verdict-name">{bot ? (bot.id === me ? "You were the Bot!" : `${bot.name} was the Bot!`) : "The Bot vanished!"}</p>
+          <p className="verdict-sub">{reveal.caught ? "Busted with more votes than anyone else." : `${escape} +400 for the Bot.`}</p>
+        </div>
+      </div>
+
+      <div className="questions">
+        <article className="q-card real">
+          <span className="kicker">Real question</span>
+          <p className="q-text">{reveal.realQuestion}</p>
+        </article>
+        <span className="versus" aria-hidden="true">
+          vs
+        </span>
+        <article className="q-card fake">
+          <span className="kicker">The Bot's question</span>
+          <p className="q-text">{reveal.botQuestion}</p>
+        </article>
+      </div>
+
+      <section className="answers" aria-label="Everyone's answers">
+        {(view.answers ?? []).map((a, i) => {
+          const seat = seatOf(players, a.playerId);
+          if (!seat) return null;
+          return (
+            <AnswerCard
+              key={a.playerId}
+              seat={seat}
+              text={a.text}
+              index={i}
+              delayMs={700}
+              mine={a.playerId === me}
+              bot={a.playerId === view.botId}
+              accusers={accusersOf(a.playerId)}
+              points={reveal.roundPoints[a.playerId] ?? 0}
+            />
+          );
+        })}
+      </section>
+      {reveal.tally.length ? null : <p className="instructions">Nobody voted. Very trusting team.</p>}
+
+      {reveal.caught ? (
+        <Panel pad="sm" className="guess-result">
+          <span className="guess-label">The Bot's guess:</span>
+          <span className="guess-text">{view.guess ? `“${view.guess}”` : "No guess. Too stunned to speak."}</span>
+          <span className={reveal.verdict?.correct ? "verdict-badge right" : "verdict-badge wrong"}>
+            {reveal.verdict?.correct ? "Correct! +250" : "Nope"}
+          </span>
+          {reveal.verdict?.quip ? <p className="quip">{reveal.verdict.quip}</p> : null}
+        </Panel>
+      ) : null}
+    </section>
+  );
+}
+
+<style>
+  .bon { display: flex; flex-direction: column; gap: 18px; }
+  .kicker { font-weight: 900; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--teal-ink); }
+
+  .bot-banner {
+    align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    background: var(--coral);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift), inset -10px -10px 0 rgba(0, 0, 0, 0.12);
+    padding: 10px 26px 14px 18px;
+    animation: slam-in 0.6s cubic-bezier(0.2, 1.6, 0.4, 1), shake 0.5s 0.6s ease-in-out;
+  }
+  .bot-brick { animation: peek 2.4s ease-in-out infinite; }
+  .bot-copy { display: flex; flex-direction: column; gap: 2px; }
+  .bot-title {
+    font-family: var(--font-display);
+    font-size: 40px;
+    line-height: 1;
+    color: var(--paper);
+    -webkit-text-stroke: 4px var(--ink);
+    paint-order: stroke fill;
+  }
+  .bot-sub { font-weight: 900; font-size: 18px; color: var(--ink); }
+
+  .question {
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 16px 26px 20px;
+    rotate: -0.5deg;
+    animation: drop 0.5s cubic-bezier(0.2, 1.5, 0.4, 1);
+  }
+  .decoy { background: var(--sun-soft); }
+  .decoy .kicker { color: var(--coral-ink); }
+  .question-text { font-family: var(--font-display); font-size: 28px; line-height: 1.15; margin-top: 4px; }
+  .big .question-text { font-size: 38px; }
+  .small { padding: 10px 20px 12px; box-shadow: var(--lift-sm); }
+  .small .question-text { font-size: 22px; }
+  .hint { margin-top: 8px; font-weight: 900; font-size: 16px; color: var(--muted); font-style: italic; }
+
+  .entry { display: flex; gap: 12px; width: min(760px, 100%); align-self: center; }
+  .text-input {
+    flex-grow: 1;
+    min-width: 0;
+    font-weight: 900;
+    font-size: 26px;
+    color: var(--ink);
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: 0 6px 0 var(--ink);
+    padding: 12px 18px;
+  }
+  .text-input:focus { outline: none; box-shadow: 0 6px 0 var(--ink), 0 0 0 5px var(--sun); }
+
+  .waiting { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+  .locked {
+    font-size: 22px;
+    text-align: center;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 10px 20px;
+  }
+  .seats { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; }
+  .seat { display: flex; flex-direction: column; align-items: center; gap: 4px; opacity: 0.5; transition: opacity 0.3s; }
+  .seat-done { opacity: 1; animation: hop 0.5s ease-out; }
+  .seat-name { font-weight: 900; font-size: 14px; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; }
+
+  .instructions {
+    align-self: center;
+    text-align: center;
+    font-weight: 900;
+    font-size: 20px;
+    color: var(--paper);
+    -webkit-text-stroke: 3px var(--ink);
+    paint-order: stroke fill;
+    max-width: 760px;
+  }
+  .answers { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 18px; }
+  .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    text-align: left;
+    font: inherit;
+    color: var(--ink);
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 22px;
+    box-shadow: var(--lift);
+    padding: 12px 16px 16px;
+    animation: deal 0.45s cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
+  }
+  .mine { background: var(--mist); }
+  .bot-card { background: var(--sun-soft); }
+  .accuse { cursor: pointer; transition: transform 0.12s, background 0.12s; }
+  .accuse:hover { transform: translateY(-4px); }
+  .accuse:active { transform: translateY(3px); box-shadow: 0 3px 0 var(--ink); }
+  .accused { background: var(--coral); rotate: 0deg !important; animation: shake 0.4s ease-in-out; }
+  .card-head { display: flex; align-items: center; gap: 10px; }
+  .card-name { font-weight: 900; font-size: 17px; flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .you { color: var(--muted); font-size: 14px; }
+  .ready-badge {
+    font-weight: 900;
+    font-size: 12px;
+    background: var(--lime);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 1px 8px;
+    animation: pop 0.3s cubic-bezier(0.2, 1.8, 0.4, 1);
+  }
+  .card-answer { font-weight: 900; font-size: 24px; line-height: 1.2; overflow-wrap: anywhere; }
+  .silent { font-size: 17px; color: var(--muted); font-style: italic; }
+  .accused-stamp {
+    position: absolute;
+    top: 10px;
+    right: -8px;
+    rotate: 12deg;
+    font-family: var(--font-display);
+    font-size: 18px;
+    color: var(--paper);
+    background: var(--ink);
+    border: 3px solid var(--paper);
+    border-radius: 8px;
+    padding: 2px 10px;
+    animation: stamp 0.35s cubic-bezier(0.2, 1.8, 0.4, 1);
+  }
+  .footer-row { display: flex; align-items: center; justify-content: center; gap: 18px; flex-wrap: wrap; }
+  .tally { font-weight: 900; font-size: 18px; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; }
+
+  .busted { display: flex; flex-direction: column; align-items: center; gap: 22px; padding-top: 10px; }
+  .busted-hero { position: relative; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .spotlight {
+    position: absolute;
+    top: -30px;
+    width: 300px;
+    height: 300px;
+    border-radius: 50%;
+    background: rgba(255, 231, 163, 0.35);
+    border: var(--line) dashed rgba(27, 31, 59, 0.3);
+    animation: spin 12s linear infinite;
+  }
+  .caught-brick { position: relative; animation: drumroll 1.2s ease-in-out, wobble 2s 1.2s ease-in-out infinite; }
+  .stamp {
+    position: absolute;
+    top: 40px;
+    rotate: -14deg;
+    font-family: var(--font-display);
+    font-size: 54px;
+    letter-spacing: 3px;
+    color: var(--coral);
+    -webkit-text-stroke: 4px var(--ink);
+    paint-order: stroke fill;
+    text-transform: uppercase;
+    animation: stamp 0.5s 1.1s cubic-bezier(0.2, 1.8, 0.4, 1) backwards;
+  }
+  .busted-name {
+    position: relative;
+    font-family: var(--font-display);
+    font-size: 36px;
+    color: var(--paper);
+    -webkit-text-stroke: 4px var(--ink);
+    paint-order: stroke fill;
+    text-shadow: 0 5px 0 var(--ink);
+    animation: rise 0.5s 1.2s ease-out backwards;
+  }
+  .guess-panel { width: min(760px, 100%); display: flex; flex-direction: column; gap: 14px; }
+  .guess-lead { font-weight: 900; font-size: 20px; text-align: center; }
+  .status-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 900;
+    font-size: 22px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 10px 20px;
+  }
+  .judging { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .guess-quote { font-family: var(--font-display); font-size: 30px; color: var(--paper); -webkit-text-stroke: 4px var(--ink); paint-order: stroke fill; text-align: center; }
+  .dots { display: inline-flex; gap: 6px; }
+  .dot { width: 12px; height: 12px; border-radius: 4px; background: var(--teal); border: 2px solid var(--ink); animation: hop 0.9s ease-in-out infinite; }
+  .dot:nth-child(2) { animation-delay: 0.15s; }
+  .dot:nth-child(3) { animation-delay: 0.3s; }
+
+  .results { display: flex; flex-direction: column; gap: 18px; }
+  .verdict-hero {
+    align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift), inset -10px -10px 0 rgba(0, 0, 0, 0.12);
+    padding: 14px 30px 18px 22px;
+    animation: slam-in 0.6s cubic-bezier(0.2, 1.6, 0.4, 1);
+  }
+  .caught { background: var(--lime); }
+  .escaped { background: var(--coral); }
+  .reveal-brick { animation: drumroll 1s ease-in-out; }
+  .verdict-copy { display: flex; flex-direction: column; gap: 4px; }
+  .verdict-name {
+    font-family: var(--font-display);
+    font-size: 40px;
+    line-height: 1;
+    color: var(--paper);
+    -webkit-text-stroke: 4px var(--ink);
+    paint-order: stroke fill;
+  }
+  .verdict-sub { font-weight: 900; font-size: 18px; }
+  .questions { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 16px; align-items: center; }
+  .q-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 22px;
+    box-shadow: var(--lift-sm);
+    padding: 14px 18px;
+    animation: deal 0.5s 0.3s cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
+  }
+  .real { rotate: -1deg; }
+  .fake { rotate: 1deg; background: var(--sun-soft); animation-delay: 0.5s; }
+  .fake .kicker { color: var(--coral-ink); }
+  .q-text { font-family: var(--font-display); font-size: 22px; line-height: 1.15; }
+  .versus {
+    font-family: var(--font-display);
+    font-size: 30px;
+    color: var(--sun);
+    -webkit-text-stroke: 4px var(--ink);
+    paint-order: stroke fill;
+  }
+  .guess-result { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; align-self: center; max-width: 900px; }
+  .guess-label { font-weight: 900; color: var(--muted); }
+  .guess-text { font-weight: 900; font-size: 20px; }
+  .verdict-badge {
+    font-family: var(--font-display);
+    font-size: 18px;
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 2px 14px;
+    animation: stamp 0.4s 0.8s cubic-bezier(0.2, 1.8, 0.4, 1) backwards;
+  }
+  .right { background: var(--lime); }
+  .wrong { background: var(--coral); color: var(--paper); }
+  .quip { flex-basis: 100%; font-style: italic; color: var(--teal-ink); font-weight: 900; }
+  .bot-tag { flex-shrink: 0; font-weight: 900; font-size: 12px; color: var(--paper); background: var(--ink); border-radius: 6px; padding: 1px 6px; }
+  .card-foot { display: flex; align-items: center; gap: 10px; min-height: 30px; }
+  .accusers { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+  .accusers-label { font-weight: 900; font-size: 13px; color: var(--muted); margin-right: 4px; }
+  .card-points {
+    margin-left: auto;
+    font-family: var(--font-display);
+    font-size: 22px;
+    color: var(--teal-ink);
+    animation: stamp 0.4s 1.2s cubic-bezier(0.2, 1.8, 0.4, 1) backwards;
+  }
+
+  @keyframes drop { from { translate: 0 -60px; opacity: 0; } }
+  @keyframes deal { from { translate: 0 80px; opacity: 0; scale: 0.8; } }
+  @keyframes hop { 40% { translate: 0 -10px; } }
+  @keyframes pop { from { scale: 0.2; } }
+  @keyframes rise { from { translate: 0 30px; opacity: 0; } }
+  @keyframes spin { to { rotate: 360deg; } }
+  @keyframes slam-in {
+    from { scale: 1.8; opacity: 0; rotate: -6deg; }
+  }
+  @keyframes shake {
+    0%, 100% { translate: 0 0; }
+    20% { translate: -8px 0; }
+    40% { translate: 8px 0; }
+    60% { translate: -6px 0; }
+    80% { translate: 6px 0; }
+  }
+  @keyframes drumroll {
+    0% { translate: 0 0; scale: 0.6; opacity: 0; }
+    10% { opacity: 1; }
+    15%, 35%, 55%, 75% { translate: -5px 0; }
+    25%, 45%, 65%, 85% { translate: 5px 0; }
+    90% { translate: 0 0; scale: 1.25; }
+    100% { scale: 1; }
+  }
+  @keyframes wobble {
+    0%, 100% { rotate: -4deg; }
+    50% { rotate: 4deg; }
+  }
+  @keyframes peek {
+    0%, 100% { translate: 0 0; rotate: 0deg; }
+    30% { translate: -6px 0; rotate: -6deg; }
+    60% { translate: 6px 0; rotate: 6deg; }
+  }
+  @keyframes stamp {
+    from { scale: 3; opacity: 0; }
+  }
+
+  @media (width < 900px) {
+    .question-text, .big .question-text { font-size: 24px; }
+    .bot-title { font-size: 30px; }
+    .entry { flex-direction: column; }
+    .questions { grid-template-columns: minmax(0, 1fr); }
+    .versus { justify-self: center; }
+    .verdict-hero { flex-direction: column; text-align: center; }
+    .verdict-name { font-size: 30px; }
+  }
+</style>
