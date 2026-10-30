@@ -1,0 +1,17 @@
+node_modules
+.turbo
+build
+dist
+.env
+.react-router
+.lumiose
+.wrangler
+.dev.vars
+test-results
+playwright-report
+packages/db/generated
+packages/db/prisma/.diff.db
+apps/web/worker-configuration.d.ts
+
+# Agent scratch space (see AGENTS.md)
+.local/

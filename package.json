@@ -1,0 +1,30 @@
+{
+  "name": "brick-party",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "test": "python3 backlog/backlog.py check && turbo run test",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write .",
+    "e2e": "playwright test",
+    "db:migrate:local": "pnpm --filter @brick/web db:migrate:local",
+    "db:diff": "pnpm --filter @brick/db db:diff",
+    "deploy": "pnpm --filter @brick/web deploy",
+    "bots": "node scripts/bots.mjs",
+    "play": "node scripts/play.mjs",
+    "og-image": "node scripts/og-image.mjs",
+    "brick": "tsx apps/cli/src/main.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.6",
+    "prettier": "^3.8.3",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.10",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,19 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  '@prisma/engines': true
+  prisma: true
+  esbuild: true
+  workerd: true
+
+minimumReleaseAgeExclude:
+  - '@ai-sdk/anthropic@4.0.91'
+  - '@ai-sdk/gateway@4.0.129'
+  - '@cloudflare/workers-types@5.20261029.1'
+  - '@types/node@26.6.6'
+  - ai@7.0.156
+  - miniflare@5.20261023.2-beta
+  - wrangler@4.155.0
+  - '@cloudflare/vite-plugin@1.66.0'
