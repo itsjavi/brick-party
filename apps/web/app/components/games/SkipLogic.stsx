@@ -1,0 +1,625 @@
+import type { ChainEntry, SkipLogicView, Stroke } from "@brick/game";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { playSfx } from "../../lib/audio";
+import { useCountdown } from "../../lib/clock";
+import { useChangeSfx } from "../../lib/use-phase-sfx";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Drawing } from "./skip-logic/Drawing.stsx";
+import { DrawingCanvas } from "./skip-logic/DrawingCanvas.stsx";
+import { packStrokes, type LocalStroke } from "./skip-logic/simplify";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+const BANNERS: Record<SkipLogicView["phase"], string> = {
+  write: "Write a survey question!",
+  draw: "Draw it!",
+  describe: "What is this?",
+  judging: "The judge is in",
+  reveal: "The big reveal",
+  done: "That's a wrap",
+};
+
+/** Sends once when the visible timer runs out. */
+function useAutoSubmit(endsAt: number, submit: () => void) {
+  const { seconds } = useCountdown(endsAt);
+  const fired = useRef(false);
+  useEffect(() => {
+    if (seconds === 0 && !fired.current) {
+      fired.current = true;
+      submit();
+    }
+  });
+}
+
+export function SkipLogic({ view, me, players, matchScore, ai, act }: GameProps<SkipLogicView>) {
+  const working = view.phase === "write" || view.phase === "draw" || view.phase === "describe";
+  useMusic(working ? "think" : view.phase === "judging" ? "tension" : "reveal");
+  useChangeSfx(`${view.phase}:${view.step}`, (key) => (String(key).startsWith("reveal") || String(key).startsWith("done") ? null : "whoosh"));
+  useChangeSfx(view.reveal?.chain, "reveal");
+
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+  const previous = useRef(myPoints);
+  useEffect(() => {
+    if (myPoints > previous.current) playSfx("point");
+    previous.current = myPoints;
+  }, [myPoints]);
+
+  const round =
+    working || !view.reveal
+      ? `Step ${view.step + 1} of ${view.totalSteps}`
+      : `Chain ${view.reveal.chain + 1} of ${view.reveal.totalChains}`;
+  const task = view.task;
+  const send = (action: unknown) => {
+    playSfx("pop");
+    act(action);
+  };
+
+  return (
+    <div className="sl">
+      <GameHud
+        gameId="skip-logic"
+        round={round}
+        banner={BANNERS[view.phase]}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={working}
+        score={matchScore + myPoints}
+      />
+
+      {working && task && !task.done ? (
+        view.phase === "write" ? (
+          <WriteTask key={view.step} endsAt={view.endsAt} suggestions={view.suggestions} onSubmit={(text) => send({ type: "write", text })} />
+        ) : view.phase === "draw" ? (
+          <DrawTask key={view.step} endsAt={view.endsAt} previous={task.previous} onSubmit={(strokes) => send({ type: "draw", strokes })} />
+        ) : (
+          <DescribeTask key={view.step} endsAt={view.endsAt} previous={task.previous} players={players} onSubmit={(text) => send({ type: "describe", text })} />
+        )
+      ) : null}
+
+      {working && (!task || task.done) ? <PassedOn players={players} submittedIds={view.submittedIds} watching={!task} /> : null}
+
+      {view.phase === "judging" ? <Judging ai={ai} /> : null}
+
+      {!working && view.reveal ? <Reveal reveal={view.reveal} players={players} me={me} act={act} /> : null}
+    </div>
+  );
+}
+
+const JUDGE_AVATAR = { color: "slate", hat: "headset" } as const;
+
+function Judging({ ai }: { ai: boolean }) {
+  return (
+    <section className="judging" aria-live="polite">
+      <Brick avatar={JUDGE_AVATAR} size="xl" mood="sly" bounce />
+      <p className="judging-title">{ai ? "Claude is judging your masterpieces..." : "Judging your masterpieces..."}</p>
+      <p className="judging-sub">Guesses that nail the drawing score +150, for the guesser and the artist.</p>
+    </section>
+  );
+}
+
+function VerdictBadge({ verdict, delay, judge }: { verdict: { closeness: number; bonus: number }; delay: number; judge: string }) {
+  const label = verdict.bonus >= 150 ? "Nailed it!" : verdict.bonus > 0 ? "Close enough" : "Way off";
+  const tone = verdict.bonus >= 150 ? "nailed" : verdict.bonus > 0 ? "close" : "off";
+  return (
+    <span className={`verdict ${tone}`} style={{ animationDelay: `${delay}s` }} title={`${judge} rated this guess ${verdict.closeness} out of 10`}>
+      {label}
+      <span className="score-out">{verdict.closeness}/10</span>
+      {verdict.bonus ? <span className="bonus">+{verdict.bonus}</span> : null}
+    </span>
+  );
+}
+
+function WriteTask({ endsAt, suggestions, onSubmit }: { endsAt: number; suggestions: string[]; onSubmit: (text: string) => void }) {
+  const [text, setText] = useState("");
+  const sent = useRef(false);
+  const submit = () => {
+    const value = text.trim();
+    if (!value || sent.current) return;
+    sent.current = true;
+    onSubmit(value);
+  };
+  useAutoSubmit(endsAt, submit);
+
+  return (
+    <form
+      className="task"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+    >
+      <div className="card">
+        <span className="kicker">Start a chain</span>
+        <label className="prompt" htmlFor="sl-write">
+          Write a survey question for someone to draw
+        </label>
+        <span className="field">
+          <input
+            id="sl-write"
+            className="input"
+            maxLength={120}
+            autoFocus
+            autoComplete="off"
+            aria-describedby="sl-write-hint"
+            placeholder="How satisfied are you with the octopus who serves our coffee?"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <span className="counter">{120 - text.length}</span>
+        </span>
+        <p className="hint" id="sl-write-hint">
+          Keep it drawable: one creature or thing, doing one thing you can see. Skip meetings, tickets and reports.
+        </p>
+      </div>
+      {suggestions.length ? (
+        <div className="chips" aria-label="Inspire me">
+          <span className="chips-label">Inspire me:</span>
+          {suggestions.map((s) => (
+            <button
+              key={s}
+              type="button"
+              className="chip"
+              onClick={() => {
+                playSfx("click");
+                setText(s.slice(0, 120));
+              }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <Button type="submit" size="lg" quiet disabled={!text.trim()}>
+        Pass it on
+      </Button>
+    </form>
+  );
+}
+
+function DrawTask({ endsAt, previous, onSubmit }: { endsAt: number; previous: ChainEntry | null; onSubmit: (strokes: Stroke[]) => void }) {
+  const [strokes, setStrokes] = useState<LocalStroke[]>([]);
+  const pending = useRef<LocalStroke | null>(null);
+  const latest = useRef(strokes);
+  latest.current = strokes;
+  const sent = useRef(false);
+
+  // Always sends, even an empty canvas, so the chain keeps moving.
+  const submit = () => {
+    if (sent.current) return;
+    sent.current = true;
+    const all = pending.current ? [...latest.current, pending.current] : latest.current;
+    onSubmit(packStrokes(all));
+  };
+  useAutoSubmit(endsAt, submit);
+
+  const commit = useCallback((stroke: LocalStroke) => setStrokes((s) => [...s, stroke]), []);
+  const undo = useCallback(() => setStrokes((s) => s.slice(0, -1)), []);
+  const clear = useCallback(() => setStrokes([]), []);
+
+  return (
+    <div className="task">
+      <div className="card small">
+        <span className="kicker">Draw this survey question</span>
+        <p className="prompt">{previous?.kind === "text" ? previous.text : "Anything you like!"}</p>
+      </div>
+      <DrawingCanvas
+        strokes={strokes}
+        onCommit={commit}
+        onUndo={undo}
+        onClear={clear}
+        pendingRef={pending}
+        actions={
+          <Button size="lg" quiet onClick={submit}>
+            Done drawing
+          </Button>
+        }
+      />
+    </div>
+  );
+}
+
+function DescribeTask({
+  endsAt,
+  previous,
+  players,
+  onSubmit,
+}: {
+  endsAt: number;
+  previous: ChainEntry | null;
+  players: Seat[];
+  onSubmit: (text: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const sent = useRef(false);
+  const submit = () => {
+    const value = text.trim();
+    if (!value || sent.current) return;
+    sent.current = true;
+    onSubmit(value);
+  };
+  useAutoSubmit(endsAt, submit);
+  const artist = seatOf(players, previous?.authorId);
+
+  return (
+    <form
+      className="task"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+    >
+      <div className="frame big">
+        {previous?.kind === "drawing" ? (
+          <Drawing strokes={previous.strokes} label={`Drawing by ${artist?.name ?? "someone"}`} />
+        ) : (
+          <p className="prompt">{previous?.kind === "text" ? previous.text : ""}</p>
+        )}
+      </div>
+      {previous?.kind === "drawing" && previous.strokes.length === 0 ? (
+        <p className="blank-note">{artist?.name ?? "The artist"} ran out of time. Make something up!</p>
+      ) : null}
+      <div className="card">
+        <label className="prompt" htmlFor="sl-describe">
+          What survey question is this?
+        </label>
+        <span className="field">
+          <input
+            id="sl-describe"
+            className="input"
+            maxLength={120}
+            autoFocus
+            autoComplete="off"
+            placeholder="Would you recommend..."
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <span className="counter">{120 - text.length}</span>
+        </span>
+      </div>
+      <Button type="submit" size="lg" quiet disabled={!text.trim()}>
+        Pass it on
+      </Button>
+    </form>
+  );
+}
+
+function PassedOn({ players, submittedIds, watching }: { players: Seat[]; submittedIds: string[]; watching: boolean }) {
+  return (
+    <section className="passed">
+      <p className="passed-title">{watching ? "You're watching this one. Next game you're in!" : "Passed it on!"}</p>
+      <ul className="who-done" aria-label="Who is done">
+        {players.map((p) => {
+          const done = submittedIds.includes(p.id);
+          return (
+            <li key={p.id} className={done ? "seat done" : "seat"}>
+              <Brick avatar={p.avatar} size="sm" mood={done ? "happy" : "sleepy"} />
+              <span className="seat-name">{p.name}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function Reveal({
+  reveal,
+  players,
+  me,
+  act,
+}: {
+  reveal: NonNullable<SkipLogicView["reveal"]>;
+  players: Seat[];
+  me: string | null;
+  act: (action: unknown) => void;
+}) {
+  const owner = seatOf(players, reveal.ownerId);
+  const entryRefs = useRef<(HTMLLIElement | null)[]>([]);
+  const verdictRef = useRef<HTMLDivElement>(null);
+
+  // Entries appear one after another; keep the newest one in view so nobody has to scroll.
+  useEffect(() => {
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const timers = reveal.entries.map((_, i) =>
+      setTimeout(() => entryRefs.current[i]?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" }), i * 1300 + 250),
+    );
+    timers.push(
+      setTimeout(
+        () => verdictRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" }),
+        reveal.entries.length * 1300 + 250,
+      ),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [reveal.chain, reveal.entries.length]);
+
+  return (
+    <section className="reveal" aria-label={`${owner?.name ?? "Someone"}'s chain`}>
+      <header className="reveal-head">
+        {owner ? <Brick avatar={owner.avatar} size="md" mood="wow" /> : null}
+        <h2 className="reveal-title">{owner?.name ?? "Someone"}'s survey</h2>
+      </header>
+      <ol className="story" key={reveal.chain}>
+        {reveal.entries.map((entry, i) => {
+          const author = seatOf(players, entry.authorId);
+          const hearts = reveal.hearts[i]?.length ?? 0;
+          const mine = entry.authorId === me;
+          const hearted = reveal.myHeart === i;
+          const verb = i === 0 ? "asked" : entry.kind === "drawing" ? "drew" : "guessed";
+          return (
+            <li
+              key={i}
+              ref={(el) => {
+                entryRefs.current[i] = el;
+              }}
+              className={entry.kind === "drawing" ? "entry pic" : "entry said"}
+              style={{ animationDelay: `${i * 1.3}s` }}
+            >
+              <div className="entry-head">
+                {author ? <Brick avatar={author.avatar} size="xs" /> : null}
+                <span className="entry-who">
+                  {author?.name ?? "Someone"} <span className="verb">{verb}</span>
+                </span>
+                {entry.timedOut ? <span className="late">ran out of time</span> : null}
+                {reveal.verdicts[i] ? <VerdictBadge verdict={reveal.verdicts[i]!} delay={i * 1.3 + 0.6} judge={reveal.judgedBy === "claude" ? "Claude" : "The judge"} /> : null}
+                {entry.kind === "drawing" && !entry.timedOut && (reveal.verdicts[i + 1]?.bonus ?? 0) > 0 ? (
+                  <span className="assist">+{reveal.verdicts[i + 1]!.bonus} for a clear drawing</span>
+                ) : null}
+              </div>
+              {entry.kind === "drawing" ? (
+                <div className="frame">
+                  <Drawing strokes={entry.strokes} label={`Drawing by ${author?.name ?? "someone"}`} />
+                </div>
+              ) : (
+                <p className="bubble">{entry.text}</p>
+              )}
+              <div className="hearts">
+                {me && !mine ? (
+                  <button
+                    type="button"
+                    className={hearted ? "heart on" : "heart"}
+                    aria-pressed={hearted}
+                    aria-label={hearted ? "Your favorite in this chain" : "Make this your favorite"}
+                    onClick={() => {
+                      playSfx("heart");
+                      act({ type: "heart", chain: reveal.chain, entry: i });
+                    }}
+                  >
+                    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M12 21s-7.5-4.6-9.5-9.3C1 8.2 3.2 4.5 6.9 4.5c2.1 0 3.6 1.1 5.1 3 1.5-1.9 3-3 5.1-3 3.7 0 5.9 3.7 4.4 7.2C19.5 16.4 12 21 12 21z"
+                        fill={hearted ? "#ff5a4e" : "#ffffff"}
+                        stroke="#1b1f3b"
+                        strokeWidth="2.4"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                ) : null}
+                {hearts ? <span className="count">{hearts}</span> : null}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      {reveal.quip ? (
+        <div className="verdict-card" ref={verdictRef} key={`v${reveal.chain}`} style={{ animationDelay: `${reveal.entries.length * 1.3}s` }}>
+          <Brick avatar={JUDGE_AVATAR} size="sm" mood="sly" />
+          <div className="verdict-text">
+            <span className="judge-label">{reveal.judgedBy === "claude" ? "Claude's verdict" : "The judge's verdict"}</span>
+            <p className="quip">{reveal.quip}</p>
+            {reveal.drift !== null ? (
+              <span className="drift" aria-label={`Drift ${reveal.drift} out of 10`}>
+                <span className="drift-label">Drift</span>
+                <span className="drift-bar" aria-hidden="true">
+                  {Array.from({ length: 10 }, (_, k) => (
+                    <span key={k} className={k < reveal.drift! ? "seg lit" : "seg"} />
+                  ))}
+                </span>
+                <span className="drift-num">{reveal.drift}/10</span>
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+<style>
+  .sl { display: flex; flex-direction: column; gap: 20px; }
+  .task { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .card {
+    position: relative;
+    width: min(760px, 100%);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 18px 24px 22px;
+    rotate: -0.5deg;
+    animation: drop 0.45s cubic-bezier(0.2, 1.5, 0.4, 1);
+  }
+  .small { padding: 12px 20px 14px; gap: 4px; }
+  .kicker { font-weight: 900; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--coral-ink); }
+  .prompt { font-family: var(--font-display); font-size: 28px; line-height: 1.15; }
+  .input {
+    width: 100%;
+    font-weight: 900;
+    font-size: 22px;
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    padding: 12px 54px 12px 14px;
+    background: var(--mist);
+  }
+  .input:focus { outline: none; box-shadow: 0 0 0 5px var(--sun); }
+  .field { position: relative; display: block; }
+  .counter { position: absolute; right: 16px; top: 50%; translate: 0 -50%; font-size: 14px; color: var(--muted); }
+  .hint { font-weight: 900; font-size: 15px; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; width: min(900px, 100%); }
+  .chips-label { font-weight: 900; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; }
+  .chip {
+    font-weight: 800;
+    font-size: 15px;
+    text-align: left;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    box-shadow: 0 3px 0 var(--ink);
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  .chip:hover { background: var(--sun-soft); }
+
+  .frame {
+    width: min(420px, 100%);
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 8px;
+  }
+  .big { width: min(480px, 100%, calc(100dvh - 420px)); min-width: 240px; rotate: 0.8deg; animation: drop 0.45s cubic-bezier(0.2, 1.5, 0.4, 1); }
+
+  .passed { display: flex; flex-direction: column; align-items: center; gap: 18px; padding-top: 30px; }
+  .judging { display: flex; flex-direction: column; align-items: center; gap: 14px; padding-top: 40px; text-align: center; }
+  .judging-title { font-family: var(--font-display); font-size: 34px; color: var(--paper); -webkit-text-stroke: 4px var(--ink); paint-order: stroke fill; }
+  .judging-sub { font-weight: 900; font-size: 18px; background: var(--paper); border: 3px solid var(--ink); border-radius: var(--radius); padding: 6px 14px; }
+  .verdict {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-display);
+    font-size: 15px;
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 2px 10px;
+    animation: stamp 0.5s cubic-bezier(0.2, 1.8, 0.4, 1) backwards;
+  }
+  .nailed { background: var(--lime); }
+  .close { background: var(--sun); }
+  .off { background: var(--paper); color: var(--muted); }
+  .score-out { font-family: var(--font-body); font-weight: 900; font-size: 12px; }
+  .bonus { color: var(--teal-ink); }
+  .assist { font-weight: 900; font-size: 13px; color: var(--teal-ink); background: var(--paper); border: 3px solid var(--ink); border-radius: 999px; padding: 2px 10px; }
+  .verdict-card {
+    width: min(760px, 100%);
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 16px 20px;
+    animation: pop-in 0.5s cubic-bezier(0.2, 1.5, 0.4, 1) backwards;
+  }
+  .verdict-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .judge-label { font-weight: 900; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--coral-ink); }
+  .quip { font-family: var(--font-display); font-size: 24px; line-height: 1.2; }
+  .drift { display: flex; align-items: center; gap: 8px; font-weight: 900; font-size: 14px; }
+  .drift-bar { display: flex; gap: 3px; }
+  .seg { width: 16px; height: 12px; border: 2px solid var(--ink); border-radius: 4px; background: var(--paper); }
+  .lit { background: var(--coral); }
+  @keyframes stamp { from { scale: 2.2; opacity: 0; rotate: -12deg; } }
+  .passed-title {
+    font-family: var(--font-display);
+    font-size: 30px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 10px 22px;
+    text-align: center;
+    animation: drop 0.45s cubic-bezier(0.2, 1.5, 0.4, 1);
+  }
+  .who-done { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; }
+  .seat { display: flex; flex-direction: column; align-items: center; gap: 4px; opacity: 0.5; transition: opacity 0.3s; }
+  .done { opacity: 1; animation: hop 0.5s ease-out; }
+  .seat-name { font-weight: 900; font-size: 14px; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; }
+
+  .blank-note { font-weight: 900; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; font-size: 18px; }
+  .reveal { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .reveal-head { display: flex; align-items: center; gap: 14px; }
+  .reveal-title {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-size: 34px;
+    color: var(--paper);
+    -webkit-text-stroke: 4px var(--ink);
+    paint-order: stroke fill;
+    text-shadow: 0 5px 0 var(--ink);
+  }
+  .story { list-style: none; margin: 0; padding: 0; width: min(760px, 100%); display: flex; flex-direction: column; gap: 18px; }
+  .entry {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    animation: pop-in 0.5s cubic-bezier(0.2, 1.5, 0.4, 1) backwards;
+  }
+  .said { align-items: flex-start; }
+  .pic { align-items: flex-end; }
+  .entry-head { display: flex; align-items: center; gap: 8px; }
+  .entry-who { font-weight: 900; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; font-size: 17px; }
+  .verb { font-weight: 800; }
+  .late {
+    font-weight: 900;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    background: var(--coral);
+    color: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 2px 10px;
+    rotate: -3deg;
+  }
+  .bubble {
+    max-width: min(560px, 100%);
+    font-weight: 900;
+    font-size: 24px;
+    line-height: 1.2;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 22px 22px 22px 6px;
+    box-shadow: var(--lift-sm);
+    padding: 12px 18px;
+    overflow-wrap: anywhere;
+  }
+  .hearts { display: flex; align-items: center; gap: 8px; min-height: 8px; }
+  .heart {
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+    box-shadow: 0 4px 0 var(--ink);
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  .heart:hover { transform: scale(1.1) rotate(-8deg); }
+  .on { background: var(--sun-soft); animation: thump 0.4s ease-out; }
+  .count {
+    font-family: var(--font-display);
+    font-size: 20px;
+    color: var(--paper);
+    -webkit-text-stroke: 3px var(--ink);
+    paint-order: stroke fill;
+  }
+
+  @keyframes drop { from { translate: 0 -50px; opacity: 0; } }
+  @keyframes hop { 40% { translate: 0 -10px; } }
+  @keyframes pop-in { from { scale: 0.6; opacity: 0; translate: 0 30px; } }
+  @keyframes thump { 50% { scale: 1.3; } }
+
+  @media (width < 900px) {
+    .prompt { font-size: 22px; }
+    .pic { align-items: center; }
+  }
+</style>

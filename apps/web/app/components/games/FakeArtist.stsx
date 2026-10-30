@@ -1,0 +1,445 @@
+import { CANVAS_UNITS, DRAW_COLORS, FAKE_ARTIST_SIZE, type FakeArtistView, type PlayerId } from "@brick/game";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { playSfx } from "../../lib/audio";
+import { useCountdown } from "../../lib/clock";
+import { useChangeSfx } from "../../lib/use-phase-sfx";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { strokePath, unflatten } from "./skip-logic/paths";
+import { packStrokes } from "./skip-logic/simplify";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+/** The server's cap on one line's values (`fakeArtistActionSchema`). */
+const LINE_LIMITS = { maxStrokes: 1, maxValues: 1200 };
+
+function banner(view: FakeArtistView, me: PlayerId | null, drawer: Seat | undefined): string {
+  switch (view.phase) {
+    case "draw":
+      if (view.drawerId && view.drawerId === me) return view.youAreFake ? "Your turn. Fake it!" : "Your turn: one line!";
+      return drawer ? `${drawer.name} is drawing...` : "Drawing...";
+    case "vote":
+      return "Who's the fake?";
+    case "guess":
+      return "Fake spotted!";
+    case "results":
+      return view.reveal?.caught ? (view.reveal.guessCorrect ? "Caught, but they knew it!" : "Caught red-handed!") : "The fake got away!";
+    case "done":
+      return "That's a wrap";
+  }
+}
+
+const hex = (view: FakeArtistView, id: PlayerId) => DRAW_COLORS[view.colors[id] ?? 0] ?? DRAW_COLORS[0]!;
+
+export function FakeArtist({ view, me, players, matchScore, act }: GameProps<FakeArtistView>) {
+  useMusic(view.phase === "draw" ? "think" : view.phase === "results" || view.phase === "done" ? "reveal" : "tension");
+  useChangeSfx(view.phase, (p) => (p === "results" || p === "guess" ? "reveal" : "whoosh"));
+
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+  const previousPoints = useRef(myPoints);
+  useEffect(() => {
+    if (myPoints > previousPoints.current) playSfx("point");
+    previousPoints.current = myPoints;
+  }, [myPoints]);
+
+  const myTurn = view.phase === "draw" && me !== null && view.drawerId === me;
+  const previousTurn = useRef(false);
+  useEffect(() => {
+    if (myTurn && !previousTurn.current) playSfx("pop");
+    previousTurn.current = myTurn;
+  }, [myTurn]);
+
+  const [guessDraft, setGuessDraft] = useState("");
+  const guessed = useRef(false);
+  useEffect(() => {
+    setGuessDraft("");
+    guessed.current = false;
+  }, [view.round]);
+  const canGuess = view.phase === "guess" && me !== null && me === view.fakeId && view.guess === null;
+  const submitGuess = () => {
+    const text = guessDraft.trim();
+    if (!canGuess || guessed.current || !text) return;
+    guessed.current = true;
+    act({ type: "guess", text });
+    playSfx("pop");
+  };
+
+  const { seconds } = useCountdown(view.phase === "guess" ? view.endsAt : null);
+  useEffect(() => {
+    if (seconds === 0 && canGuess) submitGuess();
+  });
+
+  const drawer = seatOf(players, view.drawerId);
+  const fake = seatOf(players, view.fakeId);
+
+  return (
+    <div className="fa">
+      <GameHud
+        gameId="fake-artist"
+        round={`Round ${view.round + 1} of ${view.totalRounds}`}
+        banner={banner(view, me, drawer)}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={myTurn || view.phase === "vote" || canGuess}
+        score={matchScore + myPoints}
+      />
+
+      <div className="stage">
+        <div className="left">
+          {view.phase === "results" || view.phase === "done" ? null : <SecretCard view={view} />}
+          {view.phase === "draw" ? <TurnTrack view={view} players={players} me={me} /> : null}
+          {view.phase === "vote" ? <Vote view={view} players={players} me={me} onVote={(id) => act({ type: "vote", targetId: id })} /> : null}
+          {view.phase === "guess" ? (
+            <Panel className="side-panel">
+              {fake ? (
+                <div className="busted">
+                  <Brick avatar={fake.avatar} size="lg" mood="wow" />
+                  <p className="busted-name">{fake.id === me ? "You were" : `${fake.name} was`} the fake!</p>
+                </div>
+              ) : null}
+              {canGuess ? (
+                <form
+                  className="entry"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    submitGuess();
+                  }}
+                >
+                  <label className="lead" htmlFor="fa-guess">
+                    Guess the word to steal +250. The category was <b>{view.category}</b>.
+                  </label>
+                  <input
+                    id="fa-guess"
+                    className="text-input"
+                    maxLength={40}
+                    autoComplete="off"
+                    autoFocus
+                    value={guessDraft}
+                    placeholder="What were they drawing?"
+                    onChange={(e) => setGuessDraft(e.target.value)}
+                  />
+                  <Button type="submit" size="lg" quiet disabled={!guessDraft.trim()}>
+                    Guess
+                  </Button>
+                </form>
+              ) : (
+                <p className="lead">The fake is guessing the word...</p>
+              )}
+            </Panel>
+          ) : null}
+          {(view.phase === "results" || view.phase === "done") && view.reveal ? <Results view={view} players={players} me={me} /> : null}
+        </div>
+
+        <Board view={view} myTurn={myTurn} color={me ? hex(view, me) : DRAW_COLORS[0]!} onLine={(points) => act({ type: "line", points })} />
+      </div>
+    </div>
+  );
+}
+
+function SecretCard({ view }: { view: FakeArtistView }) {
+  if (view.youAreFake) {
+    return (
+      <section className="secret fake" key={`s-${view.round}`}>
+        <span className="kicker">You're the Fake Artist</span>
+        <p className="secret-word">???</p>
+        <p className="secret-sub">
+          Category: <b>{view.category}</b>. Blend in, and work out the word from everyone's lines.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section className="secret" key={`s-${view.round}`}>
+      <span className="kicker">{view.word ? `The secret word · ${view.category}` : `Category · ${view.category}`}</span>
+      <p className="secret-word">{view.word ?? "???"}</p>
+      <p className="secret-sub">{view.word ? "Draw it, but not so clearly that the fake catches on." : "You're watching this one."}</p>
+    </section>
+  );
+}
+
+/** Whose turn it is, and who's next: every player draws twice. */
+function TurnTrack({ view, players, me }: { view: FakeArtistView; players: Seat[]; me: PlayerId | null }) {
+  return (
+    <ol className="track" aria-label="Turn order">
+      {view.turns.map((id, i) => {
+        const seat = seatOf(players, id);
+        if (!seat) return null;
+        const state = i < view.turn ? "past" : i === view.turn ? "now" : "next";
+        return (
+          <li key={i} className={`turn ${state}`} style={{ "--ink-color": hex(view, id) }} aria-current={state === "now" ? "step" : undefined}>
+            <Brick avatar={seat.avatar} size="xs" mood={state === "now" ? "wow" : "happy"} />
+            <span className="turn-name">{id === me ? "You" : seat.name}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function Vote({ view, players, me, onVote }: { view: FakeArtistView; players: Seat[]; me: PlayerId | null; onVote: (id: PlayerId) => void }) {
+  return (
+    <Panel className="side-panel">
+      <p className="lead">Talk it over, then tap who you think is the fake. You can change your vote until time runs out.</p>
+      <div className="suspects">
+        {players.map((p) => {
+          const mine = p.id === me;
+          const picked = view.myVote === p.id;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              className={picked ? "suspect picked" : "suspect"}
+              style={{ "--ink-color": hex(view, p.id) }}
+              disabled={me === null || mine}
+              aria-pressed={picked}
+              onClick={() => {
+                playSfx("vote");
+                onVote(p.id);
+              }}
+            >
+              <Brick avatar={p.avatar} size="sm" mood={picked ? "wow" : "happy"} />
+              <span className="suspect-name">{mine ? `${p.name} (you)` : p.name}</span>
+              {view.votedIds.includes(p.id) ? <span className="voted">Voted</span> : null}
+            </button>
+          );
+        })}
+      </div>
+      <p className="tally">
+        Votes in: {view.votedIds.length} / {players.length}
+      </p>
+    </Panel>
+  );
+}
+
+function Results({ view, players, me }: { view: FakeArtistView; players: Seat[]; me: PlayerId | null }) {
+  const reveal = view.reveal!;
+  const fake = seatOf(players, view.fakeId);
+  const votesFor = (id: PlayerId) => reveal.tally.find((t) => t.targetId === id)?.voters.length ?? 0;
+  const fakeVotes = view.fakeId ? votesFor(view.fakeId) : 0;
+  const why = reveal.caught
+    ? reveal.guessCorrect
+      ? `Caught, but guessed "${view.guess}": +250 for the fake.`
+      : view.guess
+        ? `Caught, and guessed "${view.guess}". Not quite.`
+        : "Caught with more votes than anyone else."
+    : fakeVotes === 0
+      ? "Nobody suspected a thing. +400 for the fake."
+      : fakeVotes === reveal.tally[0]?.voters.length
+        ? "Tied for the most votes, and a tie lets the fake escape. +400."
+        : "Someone else got more votes. +400 for the fake.";
+  return (
+    <Panel className="side-panel results">
+      <span className="kicker">The word was</span>
+      <p className="secret-word">{reveal.word}</p>
+      <div className="verdict">
+        {fake ? <Brick avatar={fake.avatar} size="lg" mood={reveal.caught ? "sad" : "sly"} /> : null}
+        <div>
+          <p className="verdict-name">{fake ? (fake.id === me ? "You were the fake!" : `${fake.name} was the fake!`) : "The fake vanished!"}</p>
+          <p className="verdict-sub">{why}</p>
+        </div>
+      </div>
+      <ul className="scores">
+        {players.map((p) => {
+          const pts = reveal.roundPoints[p.id] ?? 0;
+          return (
+            <li key={p.id} className="score-row">
+              <span className="swatch" style={{ background: hex(view, p.id) }} aria-hidden="true" />
+              <span className="score-name">{p.id === me ? "You" : p.name}</span>
+              <span className="score-votes">{votesFor(p.id) ? `${votesFor(p.id)} vote${votesFor(p.id) === 1 ? "" : "s"}` : ""}</span>
+              <span className="score-pts">{pts ? `+${pts}` : ""}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </Panel>
+  );
+}
+
+/**
+ * The shared drawing. On your turn you draw one line in your color: lifting the pen sends it. When time runs out
+ * mid-line, what's drawn so far is sent.
+ */
+function Board({ view, myTurn, color, onLine }: { view: FakeArtistView; myTurn: boolean; color: string; onLine: (points: number[]) => void }) {
+  const svg = useRef<SVGSVGElement>(null);
+  const live = useRef<SVGPathElement>(null);
+  const active = useRef<{ pointerId: number; points: number[][]; rect: DOMRect } | null>(null);
+  const sent = useRef(-1);
+  const paths = useMemo(
+    () => view.lines.map((l) => ({ d: strokePath(unflatten(l.p), FAKE_ARTIST_SIZE), fill: hex(view, l.playerId) })),
+    [view.lines, view.colors],
+  );
+
+  const send = () => {
+    const a = active.current;
+    active.current = null;
+    live.current?.setAttribute("d", "");
+    if (!a || sent.current === view.turn) return;
+    const [line] = packStrokes([{ c: 0, w: FAKE_ARTIST_SIZE, points: a.points }], LINE_LIMITS);
+    if (!line) return;
+    sent.current = view.turn;
+    playSfx("pop");
+    onLine(line.p.length >= 4 ? line.p : [...line.p, line.p[0]! + 1, line.p[1]!]);
+  };
+
+  const { seconds } = useCountdown(myTurn ? view.endsAt : null);
+  useEffect(() => {
+    if (seconds === 0 && myTurn && active.current) send();
+  });
+
+  const toPoint = (e: PointerEvent, rect: DOMRect) => [
+    Math.min(CANVAS_UNITS, Math.max(0, ((e.clientX - rect.left) / rect.width) * CANVAS_UNITS)),
+    Math.min(CANVAS_UNITS, Math.max(0, ((e.clientY - rect.top) / rect.height) * CANVAS_UNITS)),
+  ];
+  const paint = () => live.current?.setAttribute("d", strokePath(active.current?.points ?? [], FAKE_ARTIST_SIZE, { done: false }));
+
+  const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (!myTurn || active.current || !svg.current || sent.current === view.turn) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    svg.current.setPointerCapture(e.pointerId);
+    const rect = svg.current.getBoundingClientRect();
+    active.current = { pointerId: e.pointerId, points: [toPoint(e.nativeEvent, rect)], rect };
+    paint();
+  };
+  const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const a = active.current;
+    if (!a || a.pointerId !== e.pointerId) return;
+    const events = e.nativeEvent.getCoalescedEvents?.() ?? [];
+    for (const ev of events.length ? events : [e.nativeEvent]) a.points.push(toPoint(ev, a.rect));
+    paint();
+  };
+  const onPointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (active.current?.pointerId === e.pointerId) send();
+  };
+
+  return (
+    <div className={myTurn ? "board my-turn" : "board"} style={{ "--ink-color": color }}>
+      <svg
+        ref={svg}
+        className="canvas"
+        viewBox={`0 0 ${CANVAS_UNITS} ${CANVAS_UNITS}`}
+        role="img"
+        aria-label={myTurn ? "The shared drawing: draw your line here" : "The shared drawing"}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        <rect width={CANVAS_UNITS} height={CANVAS_UNITS} fill="#ffffff" />
+        {paths.map((p, i) => (
+          <path key={i} d={p.d} fill={p.fill} className={i === paths.length - 1 ? "newest" : undefined} />
+        ))}
+        <path ref={live} fill={color} />
+      </svg>
+      {myTurn ? <p className="board-hint">One line, in your color. Lift the pen to send it.</p> : null}
+    </div>
+  );
+}
+
+<style>
+  .fa { display: flex; flex-direction: column; gap: 16px; }
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 20px; align-items: start; }
+  .left { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+  .secret {
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 16px 20px;
+    animation: deal 0.35s cubic-bezier(0.2, 1.6, 0.4, 1);
+  }
+  .secret.fake { background: var(--ink); color: var(--paper); }
+  .kicker { font-weight: 900; font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); }
+  .fake .kicker { color: var(--sun); }
+  .secret-word { font-family: var(--font-display); font-size: 44px; line-height: 1.05; margin: 4px 0; }
+  .secret-sub { font-weight: 700; }
+
+  .track { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  .turn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-bottom: 7px solid var(--ink-color);
+    border-radius: 12px;
+    padding: 3px 10px 3px 4px;
+    font-weight: 900;
+    font-size: 14px;
+  }
+  .turn.past { opacity: 0.45; }
+  .turn.now { background: var(--sun); scale: 1.08; box-shadow: var(--lift-sm); }
+
+  .side-panel { display: flex; flex-direction: column; gap: 12px; }
+  .lead { font-weight: 800; font-size: 16px; }
+  .suspects { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .suspect {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: inherit;
+    font-weight: 900;
+    text-align: left;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-left: 10px solid var(--ink-color);
+    border-radius: 14px;
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .suspect:disabled { cursor: default; opacity: 0.6; }
+  .suspect.picked { background: var(--coral); color: var(--paper); }
+  .suspect:not(:disabled):active { translate: 0 3px; box-shadow: 0 1px 0 var(--ink); }
+  .suspect-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .voted { margin-left: auto; font-size: 11px; background: var(--teal); color: var(--paper); border: 2px solid var(--ink); border-radius: 999px; padding: 1px 6px; }
+  .tally { font-weight: 900; color: var(--muted); }
+
+  .busted, .verdict { display: flex; align-items: center; gap: 14px; }
+  .busted-name, .verdict-name { font-family: var(--font-display); font-size: 26px; line-height: 1.1; }
+  .verdict-sub { font-weight: 700; }
+  .entry { display: flex; flex-direction: column; gap: 10px; }
+  .text-input {
+    font: inherit;
+    font-weight: 800;
+    font-size: 20px;
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+  }
+
+  .scores { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .score-row { display: grid; grid-template-columns: 16px 1fr auto 56px; align-items: center; gap: 10px; font-weight: 900; }
+  .swatch { width: 16px; height: 16px; border: 2px solid var(--ink); border-radius: 5px; }
+  .score-votes { color: var(--muted); font-size: 14px; }
+  .score-pts { text-align: right; color: var(--teal-ink); }
+
+  .board { display: flex; flex-direction: column; gap: 8px; }
+  .canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1;
+    max-height: calc(100dvh - 260px);
+    background: #fff;
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    touch-action: none;
+  }
+  .my-turn .canvas { cursor: crosshair; outline: 6px solid var(--ink-color); outline-offset: 4px; animation: nudge 1.2s ease-in-out 2; }
+  .newest { animation: ink-in 0.6s ease-out; }
+  .board-hint { font-weight: 900; text-align: center; }
+
+  @keyframes deal { from { translate: 0 18px; opacity: 0; } }
+  @keyframes nudge { 50% { outline-offset: 10px; } }
+  @keyframes ink-in { from { opacity: 0; } }
+
+  @media (width < 900px) {
+    .stage { grid-template-columns: minmax(0, 1fr); }
+    .board { order: -1; }
+    .secret-word { font-size: 34px; }
+  }
+</style>

@@ -1,0 +1,650 @@
+import {
+  PAINT_BATCH_MS,
+  PAINT_CODES,
+  PAINT_GRAB_POINTS,
+  PAINT_INK,
+  type PaintEvent,
+  type PaintGrabView,
+  type PlayerId,
+} from "@brick/game";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { playSfx } from "../../lib/audio";
+import { AVATAR_HEX } from "../../lib/avatar";
+import { clockPaused, useCountdown } from "../../lib/clock";
+import { drawIcon } from "../../lib/icons";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { dragBrush, liftBrush, moveBrush, newBrush, pressBrush, takeBatch, type Brush } from "./paint/brush";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+/** Canvas pixels per cell; the canvas scales to fit its box. */
+const CELL = 20;
+/** How long a cell painted on this screen shows before the server's grid has to agree with it. */
+const LOCAL_MS = 1200;
+/** How long a cell that just changed colour glows. */
+const FRESH_MS = 450;
+/** How long the end-of-round tally takes to count up. */
+const COUNT_UP_MS = 2200;
+const BURST_MS = 1300;
+/** Colours for players whose brick colour someone else already paints with. */
+const SPARE_PAINTS = ["#ff8a1f", "#3557d6", "#c13bd6", "#9bb02a", "#e11d48", "#0ea5e9", "#a16207", "#16a34a"];
+const BARE = ["#fbf5ea", "#f3e8d4"];
+
+/** Each seat's paint: their brick's colour, or a spare one when someone earlier in the seats has it. */
+function paintColors(order: PlayerId[], players: Seat[]): string[] {
+  const taken = new Set<string>();
+  return order.map((id) => {
+    const seat = seatOf(players, id);
+    const own = seat ? AVATAR_HEX[seat.avatar.color] : undefined;
+    const color = own && !taken.has(own) ? own : (SPARE_PAINTS.find((c) => !taken.has(c)) ?? "#64748b");
+    taken.add(color);
+    return color;
+  });
+}
+
+const pct = (cells: number, total: number) => (total ? (cells * 100) / total : 0);
+
+function banner(view: PaintGrabView, me: PlayerId | null, name: (id: PlayerId) => string): string {
+  switch (view.phase) {
+    case "ready":
+      return view.round ? "Fresh canvas. Round two!" : "Brushes ready...";
+    case "paint": {
+      if (!view.me || !me) return "Watching the paint fly";
+      const mine = view.counts[me] ?? 0;
+      const best = Math.max(0, ...Object.values(view.counts));
+      if (mine > 0 && mine === best) return "You're in the lead!";
+      return "Paint! Close a loop to fill it";
+    }
+    case "reveal": {
+      const top = view.rounds.at(-1)?.placing[0];
+      return top ? (top === me ? "You grabbed the most canvas!" : `${name(top)} grabbed the most canvas!`) : "Time's up!";
+    }
+    case "results":
+      return "The final tally";
+    case "done":
+      return "That's a wrap";
+  }
+}
+
+/** 0 to 1 over `ms` each time `key` changes to something other than `null`; 1 otherwise. */
+function useRamp(key: string | null, ms: number): number {
+  const [ramp, setRamp] = useState<{ key: string | null; p: number }>({ key: null, p: 1 });
+  useEffect(() => {
+    if (key === null) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setRamp({ key, p: 1 });
+      return;
+    }
+    const start = performance.now();
+    let frame = 0;
+    const step = () => {
+      const p = Math.min(1, (performance.now() - start) / ms);
+      setRamp({ key, p });
+      if (p < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [key, ms]);
+  if (key === null) return 1;
+  // A new key starts from 0 on its very first render, before the effect has run.
+  return ramp.key === key ? ramp.p : 0;
+}
+
+interface Burst {
+  id: number;
+  x: number;
+  y: number;
+  color: string;
+  text: string;
+  big: boolean;
+}
+
+export function PaintGrab({ view, me, players, matchScore, act }: GameProps<PaintGrabView>) {
+  useMusic(view.phase === "ready" || view.phase === "paint" ? "tension" : "reveal");
+  const name = (id: PlayerId) => (id === me ? "You" : (seatOf(players, id)?.name ?? "?"));
+  const colors = useMemo(() => paintColors(view.order, players), [view.order.join(), players]);
+  const myIndex = me ? view.order.indexOf(me) : -1;
+  const myCode = myIndex >= 0 && view.me ? PAINT_CODES[myIndex]! : null;
+  const canPaint = view.phase === "paint" && myCode !== null;
+  const total = view.width * view.height;
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const inkFill = useRef<HTMLDivElement>(null);
+  const brush = useRef<Brush>(newBrush(0));
+  /** Cells painted here and not yet confirmed, with when. */
+  const local = useRef(new Map<number, number>());
+  /** When each cell last changed colour on the server's grid, for the glow. */
+  const freshAt = useRef(new Float64Array(view.width * view.height));
+  const previousGrid = useRef(view.grid);
+  // The animation loop reads the latest of these without restarting.
+  const live = useRef({ view, colors, myCode, canPaint });
+  live.current = { view, colors, myCode, canPaint };
+
+  // A new round or a new painting phase starts the brush over.
+  useEffect(() => {
+    brush.current = newBrush(performance.now());
+    local.current.clear();
+  }, [view.round, view.phase === "paint"]);
+
+  // Every grid from the server: glow what changed, and drop local paint it has confirmed (or that's too old to trust).
+  useEffect(() => {
+    const now = performance.now();
+    const before = previousGrid.current;
+    previousGrid.current = view.grid;
+    if (/[A-L]/.test(view.grid) && before.length === view.grid.length) {
+      // Your own strokes already showed; everything else that changed (fills, splats, others' paint) glows.
+      for (let i = 0; i < view.grid.length; i++) if (before[i] !== view.grid[i] && !local.current.has(i)) freshAt.current[i] = now;
+    }
+    for (const [cell, at] of local.current) {
+      if (view.grid[cell] === myCode || now - at > LOCAL_MS) local.current.delete(cell);
+    }
+  }, [view.grid]);
+
+  // Fills and pots: a burst on the canvas, and a sound for your own.
+  const [bursts, setBursts] = useState<Burst[]>([]);
+  const seenEvent = useRef(view.events.at(-1)?.n ?? 0);
+  useEffect(() => {
+    const fresh = view.events.filter((e) => e.n > seenEvent.current);
+    if (!fresh.length) return;
+    seenEvent.current = fresh.at(-1)!.n;
+    const added = fresh.map((e: PaintEvent): Burst => {
+      const mine = e.playerId === me;
+      if (mine) playSfx(e.kind === "pot" ? "drop" : "whoosh");
+      else if (e.kind === "pot") playSfx("drop");
+      const who = mine ? "" : `${name(e.playerId)} `;
+      return {
+        id: e.n,
+        x: e.x,
+        y: e.y,
+        color: colors[view.order.indexOf(e.playerId)] ?? "#888",
+        text: e.kind === "pot" ? `${who}SPLAT! +${e.cells}` : `${who}+${e.cells}`,
+        big: mine || e.cells >= 40,
+      };
+    });
+    setBursts((b) => [...b, ...added].slice(-8));
+    // Not cleared when the next event comes, so every burst goes away on its own clock.
+    const ids = new Set(added.map((b) => b.id));
+    setTimeout(() => setBursts((b) => b.filter((x) => !ids.has(x.id))), BURST_MS);
+  }, [view.events.at(-1)?.n]);
+
+  // Phase sounds, and a big "GO!" when painting starts.
+  const [go, setGo] = useState(false);
+  const phase = useRef(view.phase);
+  useEffect(() => {
+    if (phase.current === view.phase) return;
+    phase.current = view.phase;
+    if (view.phase === "ready") playSfx("whoosh");
+    if (view.phase === "paint") {
+      playSfx("start");
+      setGo(true);
+      const t = setTimeout(() => setGo(false), 800);
+      return () => clearTimeout(t);
+    }
+    if (view.phase === "reveal") playSfx("timeUp");
+    if (view.phase === "results") playSfx(me && Object.entries(view.points).sort((a, b) => b[1] - a[1])[0]?.[0] === me ? "win" : "reveal");
+  }, [view.phase]);
+
+  // Batches go out a few times a second, whatever the pointer does.
+  useEffect(() => {
+    if (!canPaint) return;
+    const id = setInterval(() => {
+      const strokes = takeBatch(brush.current);
+      // The server holds moves while paused, so a batch now would only be lost.
+      if (strokes && !clockPaused()) act({ type: "paint", strokes });
+    }, PAINT_BATCH_MS);
+    return () => clearInterval(id);
+  }, [canPaint]);
+
+  // The animation loop: walk the brush, then draw the canvas.
+  useEffect(() => {
+    let frame = 0;
+    const loop = () => {
+      frame = requestAnimationFrame(loop);
+      const el = canvas.current;
+      const ctx = el?.getContext("2d");
+      if (!el || !ctx) return;
+      const now = performance.now();
+      for (const cell of moveBrush(brush.current, now, live.current.canPaint && !clockPaused())) local.current.set(cell, now);
+      draw(ctx, live.current, brush.current, local.current, freshAt.current, now);
+      const fill = inkFill.current;
+      if (fill) {
+        fill.style.width = `${(brush.current.ink / PAINT_INK.max) * 100}%`;
+        fill.classList.toggle("dry", brush.current.ink < 1 + PAINT_INK.strokeCost);
+      }
+    };
+    frame = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  const cellAt = (e: PointerEvent<HTMLCanvasElement>): number => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(view.width - 1, Math.floor(((e.clientX - rect.left) / rect.width) * view.width)));
+    const y = Math.max(0, Math.min(view.height - 1, Math.floor(((e.clientY - rect.top) / rect.height) * view.height)));
+    return y * view.width + x;
+  };
+  const lift = () => liftBrush(brush.current);
+
+  const last = view.rounds.at(-1);
+  const counting = view.phase === "reveal" || view.phase === "results";
+  const ramp = useRamp(view.phase === "reveal" ? `r${view.round}` : null, COUNT_UP_MS);
+  const shownCounts = counting && last ? Object.fromEntries(Object.entries(last.counts).map(([id, n]) => [id, Math.round(n * ramp)])) : view.counts;
+  const counted = ramp >= 1;
+  const wasCounted = useRef(true);
+  useEffect(() => {
+    if (counted && !wasCounted.current && last && view.phase === "reveal") {
+      playSfx(last.placing[0] === me ? "win" : "point");
+      celebrate(colors[view.order.indexOf(last.placing[0] ?? "")] ?? "#ffcc33");
+    }
+    wasCounted.current = counted;
+  }, [counted]);
+
+  return (
+    <div className="pg">
+      <GameHud
+        gameId="paint-grab"
+        round={`Round ${view.round + 1} of ${view.totalRounds}`}
+        banner={banner(view, me, name)}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={view.phase === "paint"}
+        score={matchScore + myPoints}
+      />
+      <ShareBar order={view.order} counts={shownCounts} colors={colors} total={total} players={players} me={me} />
+      <div className="layout">
+        <div className="board">
+          <div className="frame">
+            <canvas
+              ref={canvas}
+              className={canPaint ? "canvas live" : "canvas"}
+              width={view.width * CELL}
+              height={view.height * CELL}
+              style={{ aspectRatio: `${view.width} / ${view.height}` }}
+              aria-label={`The canvas, ${view.width} by ${view.height} cells`}
+              onPointerDown={(e) => {
+                if (!canPaint || clockPaused()) return;
+                e.preventDefault();
+                e.currentTarget.setPointerCapture(e.pointerId);
+                pressBrush(brush.current, cellAt(e));
+                playSfx("pop");
+              }}
+              onPointerMove={(e) => dragBrush(brush.current, cellAt(e))}
+              onPointerUp={lift}
+              onPointerCancel={lift}
+              onLostPointerCapture={lift}
+              onPointerLeave={() => {
+                if (!brush.current.down) brush.current.hover = null;
+              }}
+            />
+            <div className="bursts" aria-hidden="true">
+              {bursts.map((b) => (
+                <span
+                  key={b.id}
+                  className={b.big ? "burst big" : "burst"}
+                  style={{ left: `${((b.x + 0.5) / view.width) * 100}%`, top: `${((b.y + 0.5) / view.height) * 100}%`, "--paint": b.color }}
+                >
+                  <span className="ring" />
+                  <span className="burst-text">{b.text}</span>
+                </span>
+              ))}
+            </div>
+            {view.phase === "ready" ? <Countdown round={view.round} endsAt={view.endsAt} /> : null}
+            {go ? (
+              <div className="go" aria-hidden="true">
+                GO!
+              </div>
+            ) : null}
+          </div>
+          {myCode ? (
+            <div className="ink" aria-hidden="true">
+              <span className="ink-label">Ink</span>
+              <div className="ink-track">
+                <div ref={inkFill} className="ink-fill" style={{ background: colors[myIndex] }} />
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <div className="side">
+          {view.phase === "ready" || view.phase === "paint" ? (
+            <Panel className="tips">
+              <ul>
+                <li>
+                  <b>Drag</b> to paint, right over anyone.
+                </li>
+                <li>
+                  <b>Close a loop</b> and everything inside fills in.
+                </li>
+                <li>
+                  <b>
+                    Grab the <Icon name="bucket" /> paint pot
+                  </b>{" "}
+                  for a big splat.
+                </li>
+                <li>Scribble too fast and your brush runs dry for a moment.</li>
+              </ul>
+            </Panel>
+          ) : null}
+          <Standings view={view} counts={shownCounts} colors={colors} total={total} players={players} me={me} name={name} points={counting && counted && last ? last.points : null} />
+          {view.phase === "results" ? <Totals view={view} players={players} name={name} /> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function draw(
+  ctx: CanvasRenderingContext2D,
+  { view, colors, myCode }: { view: PaintGrabView; colors: string[]; myCode: string | null },
+  brush: Brush,
+  local: Map<number, number>,
+  freshAt: Float64Array,
+  now: number,
+) {
+  const { width: w, height: h, grid } = view;
+  const codeAt = (i: number) => {
+    const t = myCode ? local.get(i) : undefined;
+    return t !== undefined && now - t < LOCAL_MS ? myCode! : grid[i]!;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const code = codeAt(i);
+      const seat = PAINT_CODES.indexOf(code);
+      ctx.fillStyle = seat >= 0 ? (colors[seat] ?? "#888") : BARE[(x + y) % 2]!;
+      ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+      if (seat >= 0) {
+        // A darker lip where a colour ends, so paint looks thick.
+        if (y === h - 1 || codeAt(i + w) !== code) {
+          ctx.fillStyle = "rgba(27, 31, 59, 0.22)";
+          ctx.fillRect(x * CELL, y * CELL + CELL - 4, CELL, 4);
+        }
+        const age = now - freshAt[i]!;
+        if (age < FRESH_MS) {
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.6 * (1 - age / FRESH_MS)})`;
+          ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+        }
+      }
+    }
+  }
+
+  if (view.pot !== null) {
+    const cx = (view.pot % w) * CELL + CELL / 2;
+    const cy = Math.floor(view.pot / w) * CELL + CELL / 2;
+    const beat = Math.sin(now / 180);
+    ctx.beginPath();
+    ctx.arc(cx, cy, CELL * (1.7 + 0.15 * beat), 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.75)";
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#1b1f3b";
+    ctx.stroke();
+    drawIcon(ctx, "bucket", cx, cy + beat * 3, CELL * 2.4);
+  }
+
+  const seat = myCode ? PAINT_CODES.indexOf(myCode) : -1;
+  const at = brush.pen ?? brush.hover;
+  if (seat >= 0 && at !== null && view.phase === "paint") {
+    const cx = (at % w) * CELL + CELL / 2;
+    const cy = Math.floor(at / w) * CELL + CELL / 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, CELL * (brush.down ? 0.95 : 0.8), 0, Math.PI * 2);
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "#ffffff";
+    ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = colors[seat] ?? "#1b1f3b";
+    ctx.stroke();
+  }
+}
+
+function celebrate(color: string) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  import("canvas-confetti").then(({ default: confetti }) => {
+    confetti({ particleCount: 110, spread: 90, origin: { y: 0.45 }, colors: [color, "#ffffff", "#ffcc33"] });
+  });
+}
+
+/** Everyone's share of the canvas as one bar, in seat order, with their brick on any slice big enough to hold it. */
+function ShareBar({
+  order,
+  counts,
+  colors,
+  total,
+  players,
+  me,
+}: {
+  order: PlayerId[];
+  counts: Record<PlayerId, number>;
+  colors: string[];
+  total: number;
+  players: Seat[];
+  me: PlayerId | null;
+}) {
+  return (
+    <div className="shares" role="img" aria-label={`Canvas shares: ${order.map((id) => `${seatOf(players, id)?.name ?? "?"} ${Math.round(pct(counts[id] ?? 0, total))}%`).join(", ")}`}>
+      {order.map((id, i) => {
+        const share = pct(counts[id] ?? 0, total);
+        const seat = seatOf(players, id);
+        return (
+          <span key={id} className={id === me ? "slice mine" : "slice"} style={{ width: `${share}%`, background: colors[i] }}>
+            {seat && share >= 7 ? <Brick avatar={seat.avatar} size="xs" mood="happy" /> : null}
+            {share >= 12 ? <span className="slice-pct">{Math.round(share)}%</span> : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Players by how much canvas they own; after the count-up, what the round paid them. */
+function Standings({
+  view,
+  counts,
+  colors,
+  total,
+  players,
+  me,
+  name,
+  points,
+}: {
+  view: PaintGrabView;
+  counts: Record<PlayerId, number>;
+  colors: string[];
+  total: number;
+  players: Seat[];
+  me: PlayerId | null;
+  name: (id: PlayerId) => string;
+  points: Record<PlayerId, number> | null;
+}) {
+  const ranked = [...view.order]
+    .filter((id) => counts[id] !== undefined)
+    .sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0) || view.order.indexOf(a) - view.order.indexOf(b));
+  const best = counts[ranked[0] ?? ""] ?? 0;
+  return (
+    <Panel className="standings">
+      <ol>
+        {ranked.map((id) => {
+          const seat = seatOf(players, id);
+          const n = counts[id] ?? 0;
+          const lead = n > 0 && n === best;
+          return (
+            <li key={id} className={id === me ? "row mine" : "row"}>
+              <span className="swatch" style={{ background: colors[view.order.indexOf(id)] }} />
+              {seat ? <Brick avatar={seat.avatar} size="xs" mood={lead ? "happy" : n ? "sly" : "sad"} /> : null}
+              <span className="row-name">
+                {name(id)} {lead ? <Icon name="crown" label="In the lead" /> : null}
+              </span>
+              <span className="row-pct">{pct(n, total).toFixed(1)}%</span>
+              {points ? <span className="row-pts">+{points[id] ?? 0}</span> : null}
+            </li>
+          );
+        })}
+      </ol>
+      {points ? (
+        <p className="scoring">
+          Most canvas +{PAINT_GRAB_POINTS.place[0]}, second +{PAINT_GRAB_POINTS.place[1]}, third +{PAINT_GRAB_POINTS.place[2]}, and +{PAINT_GRAB_POINTS.perPercent} per 1%.
+        </p>
+      ) : null}
+    </Panel>
+  );
+}
+
+/** Both rounds side by side, and the game's total for everyone. */
+function Totals({ view, players, name }: { view: PaintGrabView; players: Seat[]; name: (id: PlayerId) => string }) {
+  const ranked = [...view.order].filter((id) => view.points[id] !== undefined).sort((a, b) => (view.points[b] ?? 0) - (view.points[a] ?? 0));
+  return (
+    <Panel className="totals" tone="sun">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Player</th>
+            {view.rounds.map((_, i) => (
+              <th key={i} scope="col">
+                R{i + 1}
+              </th>
+            ))}
+            <th scope="col">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ranked.map((id, i) => {
+            const seat = seatOf(players, id);
+            return (
+              <tr key={id} style={{ animationDelay: `${i * 0.12}s` }}>
+                <th scope="row">
+                  {seat ? <Brick avatar={seat.avatar} size="xs" mood={i === 0 ? "happy" : "sly"} /> : null} {name(id)}
+                </th>
+                {view.rounds.map((r, j) => (
+                  <td key={j}>+{r.points[id] ?? 0}</td>
+                ))}
+                <td className="sum">{view.points[id] ?? 0}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </Panel>
+  );
+}
+
+/** 3, 2, 1 over the blank canvas. */
+function Countdown({ round, endsAt }: { round: number; endsAt: number }) {
+  const { seconds } = useCountdown(endsAt);
+  const last = useRef(seconds);
+  useEffect(() => {
+    if (seconds !== last.current && seconds > 0 && seconds <= 3) playSfx("tick");
+    last.current = seconds;
+  }, [seconds]);
+  return (
+    <div className="countdown" aria-live="polite">
+      <span className="cd-round">Round {round + 1}</span>
+      <span className="cd-num" key={seconds}>
+        {seconds || "GO!"}
+      </span>
+    </div>
+  );
+}
+
+<style>
+  .pg { position: relative; display: flex; flex-direction: column; gap: 12px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr); gap: 18px; align-items: start; }
+  .board { display: flex; flex-direction: column; gap: 8px; }
+  .frame { position: relative; border: var(--line) solid var(--ink); border-radius: var(--radius); box-shadow: var(--lift); overflow: hidden; background: #fbf5ea; }
+  .canvas { display: block; width: 100%; height: auto; max-height: calc(100dvh - 300px); object-fit: contain; touch-action: none; user-select: none; }
+  .canvas.live { cursor: crosshair; }
+
+  .shares { display: flex; height: 38px; border: var(--line) solid var(--ink); border-radius: 999px; overflow: hidden; background: repeating-linear-gradient(45deg, #fbf5ea 0 10px, #f3e8d4 10px 20px); box-shadow: var(--lift-sm); }
+  .slice { position: relative; display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; overflow: hidden; transition: width 0.25s ease-out; border-right: 2px solid rgba(27, 31, 59, 0.35); }
+  .slice:last-child { border-right: 0; }
+  .slice.mine { box-shadow: inset 0 0 0 3px var(--paper); }
+  .slice-pct { font-family: var(--font-display); font-size: 16px; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; }
+
+  .bursts { position: absolute; inset: 0; pointer-events: none; }
+  .burst { position: absolute; translate: -50% -50%; display: flex; align-items: center; justify-content: center; }
+  .ring { position: absolute; width: 60px; height: 60px; border-radius: 50%; border: 6px solid var(--paint); animation: ring 0.7s ease-out forwards; }
+  .burst.big .ring { width: 110px; height: 110px; border-width: 9px; }
+  .burst-text {
+    position: relative;
+    font-family: var(--font-display);
+    font-size: 20px;
+    white-space: nowrap;
+    color: var(--paper);
+    background: var(--paint);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 0 10px;
+    animation: rise 1.3s cubic-bezier(0.2, 1.6, 0.4, 1) forwards;
+  }
+  .burst.big .burst-text { font-size: 28px; }
+
+  .go {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    font-size: 120px;
+    color: var(--sun);
+    -webkit-text-stroke: 8px var(--ink);
+    paint-order: stroke fill;
+    pointer-events: none;
+    animation: go 0.8s ease-out forwards;
+  }
+
+  .ink { display: flex; align-items: center; gap: 8px; }
+  .ink-label { font-weight: 900; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+  .ink-track { flex-grow: 1; height: 14px; border: 3px solid var(--ink); border-radius: 999px; background: var(--paper); overflow: hidden; }
+  .ink-fill { height: 100%; width: 100%; }
+  .ink-fill.dry { animation: dry 0.3s steps(2) infinite; }
+
+  .side { display: flex; flex-direction: column; gap: 12px; }
+  .tips ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-weight: 800; font-size: 14px; }
+  .standings ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .row { display: flex; align-items: center; gap: 8px; font-weight: 900; border-radius: 12px; padding: 2px 6px; }
+  .row.mine { background: var(--sun-soft); }
+  .swatch { width: 18px; height: 18px; flex-shrink: 0; border: 3px solid var(--ink); border-radius: 6px; }
+  .row-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-pct { font-variant-numeric: tabular-nums; }
+  .row-pts { color: var(--teal-ink); min-width: 52px; text-align: right; animation: pop 0.4s cubic-bezier(0.2, 1.8, 0.4, 1); }
+  .scoring { margin-top: 10px; font-weight: 700; font-size: 13px; color: var(--muted); }
+  .totals table { width: 100%; border-collapse: collapse; font-weight: 900; }
+  .totals th, .totals td { padding: 4px 6px; text-align: right; }
+  .totals th[scope="row"], .totals thead th:first-child { text-align: left; }
+  .totals tbody tr { animation: pop 0.4s cubic-bezier(0.2, 1.8, 0.4, 1) both; }
+  .totals .sum { font-family: var(--font-display); font-size: 20px; }
+
+  .countdown {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: rgba(27, 31, 59, 0.35);
+    pointer-events: none;
+  }
+  .cd-round { font-family: var(--font-display); font-size: 28px; color: var(--paper); -webkit-text-stroke: 4px var(--ink); paint-order: stroke fill; }
+  .cd-num { font-family: var(--font-display); font-size: 140px; line-height: 1; color: var(--sun); -webkit-text-stroke: 8px var(--ink); paint-order: stroke fill; animation: count 0.9s ease-out; }
+
+  @keyframes ring { from { scale: 0.2; opacity: 1; } to { scale: 1.6; opacity: 0; } }
+  @keyframes rise { 0% { scale: 0.3; opacity: 0; } 15% { scale: 1.15; opacity: 1; } 70% { opacity: 1; translate: 0 -18px; } 100% { opacity: 0; translate: 0 -34px; } }
+  @keyframes go { from { scale: 0.4; opacity: 0; } 30% { scale: 1.1; opacity: 1; } to { scale: 1.6; opacity: 0; } }
+  @keyframes count { from { scale: 1.8; opacity: 0; } 30% { scale: 1; opacity: 1; } }
+  @keyframes dry { 50% { opacity: 0.35; } }
+  @keyframes pop { from { scale: 0.3; opacity: 0; } }
+
+  @media (width < 900px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    .canvas { max-height: none; }
+    .go { font-size: 80px; }
+    .cd-num { font-size: 96px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ring, .burst-text, .go, .cd-num, .ink-fill.dry, .totals tbody tr, .row-pts { animation: none; }
+    .ring, .go { display: none; }
+  }
+</style>

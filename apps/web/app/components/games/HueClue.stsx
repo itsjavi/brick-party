@@ -1,0 +1,797 @@
+import {
+  HUE_CELLS,
+  HUE_CLUE_MAX_CLUE,
+  HUE_CLUE_POINTS,
+  HUE_COLORS,
+  HUE_COLS,
+  HUE_COLUMN_LETTERS,
+  HUE_ROWS,
+  cellLabel,
+  cellX,
+  cellY,
+  clueProblem,
+  type HueClueRevealPin,
+  type HueClueView,
+  type PlayerId,
+} from "@brick/game";
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { playSfx } from "../../lib/audio";
+import { clockPaused, useCountdown } from "../../lib/clock";
+import { useChangeSfx } from "../../lib/use-phase-sfx";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick, type BrickMood } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+/** How long apart the pins drop at the reveal, after the ripple has started. */
+const PIN_STEP_MS = 260;
+const PINS_START_MS = 650;
+
+const ringWord = (rings: number) => (rings === 0 ? "Bullseye!" : `${rings} ring${rings === 1 ? "" : "s"} off`);
+const moodFor = (rings: number): BrickMood => (rings === 0 ? "wow" : rings <= 2 ? "happy" : rings <= 4 ? "sly" : "sad");
+
+function banner(view: HueClueView, me: PlayerId | null, name: (id: PlayerId) => string): string {
+  switch (view.phase) {
+    case "clue":
+      return view.youGive ? "Your colour. Give a clue!" : `${name(view.giverId)} is thinking...`;
+    case "guess":
+      if (view.youGive) return "Watch them hunt for it";
+      if (view.youGive === null) return "Find the colour!";
+      return view.myPin?.locked ? "Locked in!" : "Tap the colour!";
+    case "reveal": {
+      const pins = view.reveal?.pins ?? [];
+      const mine = pins.find((p) => p.playerId === me);
+      if (mine?.rings === 0) return "Bullseye!";
+      const hit = pins.find((p) => p.rings === 0);
+      if (hit) return `${name(hit.playerId)} nailed it!`;
+      if (view.youGive) return pins.some((p) => p.rings <= 1) ? "Your clue landed!" : "Tough crowd...";
+      return pins[0] && pins[0].rings <= 1 ? "So close!" : "There it was!";
+    }
+    case "done":
+      return "That's a wrap";
+  }
+}
+
+export function HueClue({ view, me, players, matchScore, act }: GameProps<HueClueView>) {
+  useMusic(view.phase === "reveal" || view.phase === "done" ? "reveal" : "think");
+  useChangeSfx(`${view.round}:${view.phase}`, (key) =>
+    String(key).endsWith("clue") ? "whoosh" : String(key).endsWith("guess") ? "pop" : String(key).endsWith("reveal") ? "reveal" : null,
+  );
+  const name = (id: PlayerId) => (id === me ? "You" : (seatOf(players, id)?.name ?? "?"));
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+  const giver = seatOf(players, view.giverId);
+  const canGuess = view.phase === "guess" && view.youGive === false && !view.myPin?.locked;
+  const myTurnToClue = view.phase === "clue" && view.youGive === true;
+
+  // Taps go out at once; the screen shows the pin before the server confirms it.
+  const [pending, setPending] = useState<number | null>(null);
+  useEffect(() => setPending(null), [view.round, view.phase]);
+  useEffect(() => {
+    if (view.myPin && view.myPin.cell === pending) setPending(null);
+  }, [view.myPin?.cell]);
+  const myCell = canGuess && pending !== null ? pending : (view.myPin?.cell ?? null);
+
+  const place = (cell: number) => {
+    if (!canGuess || clockPaused() || cell === myCell) return;
+    setPending(cell);
+    playSfx("pop");
+    act({ type: "guess", cell });
+  };
+  const lock = () => {
+    if (!canGuess || myCell === null || clockPaused()) return;
+    playSfx("vote");
+    act({ type: "guess", cell: myCell, lock: true });
+  };
+
+  return (
+    <div className="hc">
+      <GameHud
+        gameId="hue-clue"
+        round={`Round ${view.round + 1} of ${view.totalRounds}`}
+        banner={banner(view, me, name)}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={myTurnToClue || canGuess}
+        score={matchScore + myPoints}
+      />
+      <div className="layout">
+        <div className="main">
+          <ClueCard view={view} giver={giver} name={name} onClue={(text) => act({ type: "clue", text })} />
+          <Board view={view} me={me} players={players} myCell={myCell} canGuess={canGuess} onPlace={place} />
+        </div>
+        <div className="side">
+          {view.phase === "guess" ? (
+            <Panel className="side-panel" pad="sm">
+              {canGuess ? (
+                <>
+                  <p className="lead">
+                    {myCell === null ? "Tap the cell you think it is. You can move your pin until time runs out." : `Your pin is on ${cellLabel(myCell)}.`}
+                  </p>
+                  <Button size="lg" tone="teal" quiet disabled={myCell === null} onClick={lock}>
+                    Lock it in <Icon name="lock" />
+                  </Button>
+                </>
+              ) : view.youGive ? (
+                <p className="lead">Your colour is outlined. Pins stay hidden until the reveal.</p>
+              ) : view.myPin?.locked ? (
+                <p className="lead">Locked in on {cellLabel(view.myPin.cell)}. Waiting for the others...</p>
+              ) : (
+                <p className="lead">Watching the hunt.</p>
+              )}
+              <PinTrack view={view} players={players} me={me} />
+            </Panel>
+          ) : null}
+          {view.phase === "clue" ? (
+            <Panel className="side-panel scoring" pad="sm">
+              <p className="kicker">Scoring</p>
+              <ul>
+                <li>
+                  On the colour <b>+{HUE_CLUE_POINTS.guess[0]}</b>
+                </li>
+                <li>
+                  One ring off <b>+{HUE_CLUE_POINTS.guess[1]}</b>
+                </li>
+                <li>
+                  Two rings off <b>+{HUE_CLUE_POINTS.guess[2]}</b>
+                </li>
+                <li>
+                  Clue-giver: <b>+{HUE_CLUE_POINTS.giver[1]}</b> per pin within one ring, <b>+{HUE_CLUE_POINTS.giver[2]}</b> two rings off
+                </li>
+              </ul>
+            </Panel>
+          ) : null}
+          {view.reveal ? <Results view={view} players={players} me={me} name={name} /> : null}
+          {view.past.length && view.phase !== "reveal" && view.phase !== "done" ? <Past view={view} name={name} /> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The clue, big: the clue-giver's colour and their box to type in, a thinking brick, or the clue itself. */
+function ClueCard({
+  view,
+  giver,
+  name,
+  onClue,
+}: {
+  view: HueClueView;
+  giver: Seat | undefined;
+  name: (id: PlayerId) => string;
+  onClue: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const sent = useRef(false);
+  useEffect(() => {
+    setDraft("");
+    sent.current = false;
+  }, [view.round]);
+  const giving = view.phase === "clue" && view.youGive === true && view.target !== null;
+  const problem = draft.trim() ? clueProblem(draft) : null;
+  const submit = () => {
+    if (!giving || sent.current || clockPaused() || !draft.trim() || problem) return;
+    sent.current = true;
+    playSfx("start");
+    onClue(draft);
+  };
+  // Time's up: a good clue still in the box goes out.
+  const { seconds } = useCountdown(giving ? view.endsAt : null);
+  useEffect(() => {
+    if (giving && seconds === 0) submit();
+  });
+
+  if (giving) {
+    return (
+      <section className="clue-card giving" key={`give-${view.round}`}>
+        <div className="secret-swatch" style={{ background: HUE_COLORS[view.target!] }}>
+          <span className="swatch-label">{cellLabel(view.target!)}</span>
+        </div>
+        <form
+          className="clue-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <label className="kicker" htmlFor="hc-clue">
+            Only you can see this colour
+          </label>
+          <div className="clue-row">
+            <input
+              id="hc-clue"
+              className="clue-input"
+              maxLength={HUE_CLUE_MAX_CLUE}
+              autoComplete="off"
+              autoFocus
+              value={draft}
+              placeholder="banana? lava? ocean?"
+              aria-invalid={problem ? true : undefined}
+              aria-describedby="hc-rule"
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <Button type="submit" size="lg" quiet disabled={!draft.trim() || !!problem}>
+              Give clue
+            </Button>
+          </div>
+          <p id="hc-rule" className={problem ? "rule bad" : "rule"} aria-live="polite">
+            {problem ?? "House rule: one or two words. No colour names, no numbers."}
+          </p>
+        </form>
+      </section>
+    );
+  }
+
+  if (view.phase === "clue") {
+    return (
+      <section className="clue-card waiting" key={`wait-${view.round}`}>
+        {giver ? <Brick avatar={giver.avatar} size="sm" mood="sly" bounce /> : null}
+        <p className="waiting-text">
+          {name(view.giverId)} is picking a clue
+          <span className="dots" aria-hidden="true">
+            <span>.</span>
+            <span>.</span>
+            <span>.</span>
+          </span>
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="clue-card shown" key={`clue-${view.round}`}>
+      {giver ? <Brick avatar={giver.avatar} size="sm" mood={view.phase === "guess" ? "happy" : "wow"} /> : null}
+      <div className="clue-text-wrap">
+        <span className="kicker">{view.autoClue ? `House clue · ${name(view.giverId)} ran out of time` : `Clue from ${name(view.giverId)}`}</span>
+        <p className="clue-text">“{view.clue}”</p>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * The board. A mouse zooms the cell under it; a finger gets a loupe above it while pressing and sliding, since the
+ * finger hides the cell. Letting go puts your pin there, and arrow keys and Enter do the same from the keyboard.
+ */
+function Board({
+  view,
+  me,
+  players,
+  myCell,
+  canGuess,
+  onPlace,
+}: {
+  view: HueClueView;
+  me: PlayerId | null;
+  players: Seat[];
+  myCell: number | null;
+  canGuess: boolean;
+  onPlace: (cell: number) => void;
+}) {
+  const cells = useRef<HTMLDivElement>(null);
+  const [aim, setAim] = useState<number | null>(null);
+  const pressing = useRef(false);
+  const [focus, setFocus] = useState(() => myCell ?? Math.floor(HUE_CELLS / 2));
+  const revealed = view.reveal;
+  const target = view.target;
+  const mySeat = seatOf(players, me);
+
+  const cellFrom = (e: PointerEvent<HTMLDivElement>): number | null => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = Math.floor(((e.clientX - rect.left) / rect.width) * HUE_COLS);
+    const y = Math.floor(((e.clientY - rect.top) / rect.height) * HUE_ROWS);
+    if (x < 0 || y < 0 || x >= HUE_COLS || y >= HUE_ROWS) return null;
+    return y * HUE_COLS + x;
+  };
+
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const step: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const d = step[e.key];
+    if (!d) return;
+    e.preventDefault();
+    const x = Math.min(HUE_COLS - 1, Math.max(0, cellX(focus) + d[0]));
+    const y = Math.min(HUE_ROWS - 1, Math.max(0, cellY(focus) + d[1]));
+    const next = y * HUE_COLS + x;
+    setFocus(next);
+    cells.current?.querySelector<HTMLButtonElement>(`[data-cell="${next}"]`)?.focus();
+  };
+
+  // The reveal: drop the pins one by one, farthest first, so the closest lands last.
+  const dropOrder = revealed ? [...revealed.pins].reverse() : [];
+  const revealKey = revealed ? `${view.round}:${revealed.target}` : null;
+  useEffect(() => {
+    if (!revealed || view.phase !== "reveal") return;
+    const timers = dropOrder.map((pin, i) =>
+      setTimeout(() => {
+        playSfx(pin.rings === 0 ? "win" : "drop");
+        if (pin.playerId === me && pin.points > 0 && pin.rings > 0) playSfx("point");
+        if (pin.rings === 0 && pin.playerId === me) celebrate(HUE_COLORS[revealed.target]!);
+      }, PINS_START_MS + i * PIN_STEP_MS),
+    );
+    if (view.youGive && revealed.giverPoints > 0) timers.push(setTimeout(() => playSfx("point"), PINS_START_MS + dropOrder.length * PIN_STEP_MS));
+    return () => timers.forEach(clearTimeout);
+  }, [revealKey, view.phase]);
+
+  const loupe = canGuess ? aim : null;
+  // Several pins on one cell sit side by side.
+  const stackOf = (pin: HueClueRevealPin) => {
+    const here = revealed!.pins.filter((p) => p.cell === pin.cell);
+    return { k: here.indexOf(pin), n: here.length };
+  };
+
+  return (
+    <div className={canGuess ? "board live" : "board"} style={{ "--cols": HUE_COLS, "--rows": HUE_ROWS }}>
+      <div className="col-labels" aria-hidden="true">
+        {[...HUE_COLUMN_LETTERS].map((l) => (
+          <span key={l}>{l}</span>
+        ))}
+      </div>
+      <div className="row-labels" aria-hidden="true">
+        {Array.from({ length: HUE_ROWS }, (_, y) => (
+          <span key={y}>{y + 1}</span>
+        ))}
+      </div>
+      <div
+        ref={cells}
+        className="cells"
+        role="group"
+        aria-label={canGuess ? "The colour board: pick a cell" : "The colour board"}
+        onKeyDown={onKey}
+        onPointerMove={(e) => {
+          // Mice get the hover zoom; fingers get the loupe, which shows the cell their finger hides.
+          if (pressing.current && e.pointerType !== "mouse") setAim(cellFrom(e));
+        }}
+        onPointerDown={(e) => {
+          if (!canGuess || (e.pointerType === "mouse" && e.button !== 0)) return;
+          pressing.current = true;
+          if (e.pointerType !== "mouse") {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setAim(cellFrom(e));
+          }
+        }}
+        onPointerUp={(e) => {
+          if (!pressing.current) return;
+          pressing.current = false;
+          const cell = cellFrom(e);
+          if (cell !== null) onPlace(cell);
+          setAim(null);
+        }}
+        onPointerCancel={() => {
+          pressing.current = false;
+          setAim(null);
+        }}
+        onPointerLeave={() => {
+          if (!pressing.current) setAim(null);
+        }}
+      >
+        {HUE_COLORS.map((color, cell) => (
+          <button
+            key={cell}
+            type="button"
+            data-cell={cell}
+            className={[
+              "cell",
+              cell === myCell ? "mine" : "",
+              cell === target ? "target" : "",
+              revealed && ringOf(cell, revealed.target) === 1 ? "ring1" : "",
+              revealed && ringOf(cell, revealed.target) === 2 ? "ring2" : "",
+            ].join(" ")}
+            style={{ background: color, "--d": revealed ? ringOf(cell, revealed.target) : 0 }}
+            tabIndex={cell === focus ? 0 : -1}
+            aria-label={`${cellLabel(cell)}${cell === myCell ? ", your pin" : ""}${cell === target ? ", the colour" : ""}`}
+            aria-pressed={canGuess ? cell === myCell : undefined}
+            disabled={!canGuess}
+            onFocus={() => setFocus(cell)}
+            onClick={(e) => {
+              // Pointers place pins on release; this is for the keyboard.
+              if (e.detail === 0) onPlace(cell);
+            }}
+          />
+        ))}
+
+        <div className="overlay" aria-hidden="true">
+          {revealed ? (
+            <div key={revealKey}>
+              <span className="square s2" style={{ ...at(revealed.target), width: `${(500 / HUE_COLS).toFixed(3)}%`, height: `${(500 / HUE_ROWS).toFixed(3)}%` }} />
+              <span className="square s1" style={{ ...at(revealed.target), width: `${(300 / HUE_COLS).toFixed(3)}%`, height: `${(300 / HUE_ROWS).toFixed(3)}%` }} />
+              <span className="ripple" style={at(revealed.target)}>
+                <span className="wave" />
+                <span className="wave w2" />
+                <span className="wave w3" />
+              </span>
+            </div>
+          ) : null}
+
+          {!revealed && myCell !== null && mySeat ? (
+            <span key={`me-${myCell}`} className={view.myPin?.locked ? "pin locked" : "pin"} style={at(myCell)}>
+              <Brick avatar={mySeat.avatar} size="xs" mood={view.myPin?.locked ? "happy" : "sly"} />
+              <span className="pin-tip" />
+            </span>
+          ) : null}
+
+          {revealed
+            ? dropOrder.map((pin, i) => {
+                const seat = seatOf(players, pin.playerId);
+                const { k, n } = stackOf(pin);
+                return (
+                  <span
+                    key={`${revealKey}-${pin.playerId}`}
+                    className={pin.playerId === me ? "pin dropped mine-pin" : "pin dropped"}
+                    style={{ ...at(pin.cell), "--shift": `${(k - (n - 1) / 2) * 14}px`, animationDelay: `${PINS_START_MS + i * PIN_STEP_MS}ms` }}
+                  >
+                    {seat ? <Brick avatar={seat.avatar} size="xs" mood={moodFor(pin.rings)} /> : null}
+                    <span className="pin-tip" />
+                    {pin.points ? (
+                      <span className="pin-points" style={{ animationDelay: `${PINS_START_MS + i * PIN_STEP_MS + 250}ms` }}>
+                        +{pin.points}
+                      </span>
+                    ) : null}
+                  </span>
+                );
+              })
+            : null}
+
+          {loupe !== null ? (
+            <span className="loupe" style={{ ...at(loupe), "--hue": HUE_COLORS[loupe] }}>
+              <span className="loupe-label">{cellLabel(loupe)}</span>
+            </span>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ringOf = (a: number, b: number) => Math.max(Math.abs(cellX(a) - cellX(b)), Math.abs(cellY(a) - cellY(b)));
+/** Where a cell's middle is on the board, as a position for the overlay. */
+const at = (cell: number) => ({
+  left: `${((cellX(cell) + 0.5) / HUE_COLS) * 100}%`,
+  top: `${((cellY(cell) + 0.5) / HUE_ROWS) * 100}%`,
+});
+
+function celebrate(color: string) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  import("canvas-confetti").then(({ default: confetti }) => {
+    confetti({ particleCount: 90, spread: 80, origin: { y: 0.5 }, colors: [color, "#ffffff", "#ffcc33"] });
+  });
+}
+
+/** Who's guessing: a check once their pin is down, a lock once it's final. Never where. */
+function PinTrack({ view, players, me }: { view: HueClueView; players: Seat[]; me: PlayerId | null }) {
+  return (
+    <ul className="track" aria-label="Pins down">
+      {view.guessers.map((id) => {
+        const seat = seatOf(players, id);
+        if (!seat) return null;
+        const locked = view.lockedIds.includes(id);
+        const placed = view.placedIds.includes(id);
+        return (
+          <li key={id} className={locked ? "who locked" : placed ? "who placed" : "who"}>
+            <Brick avatar={seat.avatar} size="xs" mood={placed ? "happy" : "sleepy"} />
+            <span className="who-name">{id === me ? "You" : seat.name}</span>
+            <span className="who-state">{locked ? <Icon name="lock" label="Locked in" /> : placed ? <Icon name="pin" label="Pin placed" /> : "..."}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** The round's pins, closest first, with what they scored and what the clue earned. */
+function Results({ view, players, me, name }: { view: HueClueView; players: Seat[]; me: PlayerId | null; name: (id: PlayerId) => string }) {
+  const reveal = view.reveal!;
+  const giver = seatOf(players, view.giverId);
+  return (
+    <Panel className="side-panel results" pad="sm">
+      <div className="answer">
+        <span className="answer-swatch" style={{ background: HUE_COLORS[reveal.target] }} />
+        <div>
+          <span className="kicker">The colour was</span>
+          <p className="answer-label">{cellLabel(reveal.target)}</p>
+        </div>
+      </div>
+      <ol className="pins">
+        {reveal.pins.map((p, i) => {
+          const seat = seatOf(players, p.playerId);
+          return (
+            <li key={p.playerId} className={p.playerId === me ? "pin-row mine" : "pin-row"} style={{ animationDelay: `${PINS_START_MS + (reveal.pins.length - 1 - i) * PIN_STEP_MS}ms` }}>
+              {seat ? <Brick avatar={seat.avatar} size="xs" mood={moodFor(p.rings)} /> : null}
+              <span className="pin-name">{name(p.playerId)}</span>
+              <span className="pin-dist">
+                {cellLabel(p.cell)} · {ringWord(p.rings)}
+              </span>
+              <span className="pin-pts">{p.points ? `+${p.points}` : ""}</span>
+            </li>
+          );
+        })}
+        {reveal.pins.length === 0 ? <li className="pin-row empty">No pins this round.</li> : null}
+        <li className={view.giverId === me ? "pin-row giver mine" : "pin-row giver"}>
+          {giver ? <Brick avatar={giver.avatar} size="xs" mood={reveal.giverPoints ? "happy" : "sad"} /> : null}
+          <span className="pin-name">{name(view.giverId)}</span>
+          <span className="pin-dist">{view.autoClue ? "house clue" : "for the clue"}</span>
+          <span className="pin-pts">{reveal.giverPoints ? `+${reveal.giverPoints}` : ""}</span>
+        </li>
+      </ol>
+    </Panel>
+  );
+}
+
+/** Earlier rounds' clues and their colours, so the board builds a memory. */
+function Past({ view, name }: { view: HueClueView; name: (id: PlayerId) => string }) {
+  return (
+    <Panel className="side-panel" pad="sm">
+      <p className="kicker">Earlier clues</p>
+      <ul className="past">
+        {view.past.map((p, i) => (
+          <li key={i} className="past-row">
+            <span className="past-swatch" style={{ background: HUE_COLORS[p.target] }} />
+            <span className="past-clue">“{p.clue}”</span>
+            <span className="past-who">{name(p.giverId)}</span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
+<style>
+  .hc { display: flex; flex-direction: column; gap: 14px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(250px, 1fr); gap: 18px; align-items: start; }
+  .main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .kicker { font-weight: 900; font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); }
+  .lead { font-weight: 800; font-size: 15px; }
+  .side-panel { display: flex; flex-direction: column; gap: 10px; }
+
+  /* The clue */
+  .clue-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-height: 92px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 12px 18px;
+    animation: deal 0.35s cubic-bezier(0.2, 1.6, 0.4, 1);
+  }
+  .clue-card.giving { align-items: stretch; }
+  .secret-swatch {
+    position: relative;
+    flex-shrink: 0;
+    width: 96px;
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: inset 0 -8px 0 rgba(0, 0, 0, 0.12);
+    animation: glow 1.6s ease-in-out infinite alternate;
+  }
+  .swatch-label {
+    position: absolute;
+    left: 6px;
+    bottom: 4px;
+    font-weight: 900;
+    font-size: 12px;
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    border-radius: 999px;
+    padding: 0 6px;
+  }
+  .clue-form { display: flex; flex-direction: column; gap: 6px; flex-grow: 1; min-width: 0; }
+  .clue-row { display: flex; gap: 8px; }
+  .clue-input {
+    flex-grow: 1;
+    min-width: 0;
+    font: inherit;
+    font-weight: 800;
+    font-size: 22px;
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+  }
+  .clue-input[aria-invalid] { border-color: var(--coral); }
+  .rule { font-weight: 800; font-size: 13px; color: var(--muted); }
+  .rule.bad { color: var(--coral-ink); }
+  .waiting-text { font-family: var(--font-display); font-size: 26px; line-height: 1.1; }
+  .dots span { animation: dot 1.2s infinite; }
+  .dots span:nth-child(2) { animation-delay: 0.2s; }
+  .dots span:nth-child(3) { animation-delay: 0.4s; }
+  .clue-text-wrap { display: flex; flex-direction: column; min-width: 0; }
+  .clue-text {
+    font-family: var(--font-display);
+    font-size: clamp(34px, 6vw, 58px);
+    line-height: 1;
+    overflow-wrap: anywhere;
+    animation: stamp 0.45s cubic-bezier(0.2, 1.8, 0.4, 1);
+  }
+
+  /* The board */
+  .board {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-rows: 18px auto;
+    gap: 4px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+    padding: 8px 10px 10px 6px;
+  }
+  .col-labels { grid-column: 2; display: grid; grid-template-columns: repeat(var(--cols), 1fr); }
+  .row-labels { grid-column: 1; grid-row: 2; display: grid; grid-template-rows: repeat(var(--rows), 1fr); }
+  .col-labels span, .row-labels span { display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 12px; color: var(--muted); }
+  .cells {
+    position: relative;
+    grid-column: 2;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(var(--cols), 1fr);
+    grid-template-rows: repeat(var(--rows), 1fr);
+    aspect-ratio: 16 / 9.5;
+    max-height: calc(100dvh - 330px);
+    min-height: 200px;
+    border-radius: 10px;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .cell {
+    position: relative;
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    border-radius: 4px;
+    padding: 0;
+    cursor: default;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  .cell:disabled { opacity: 1; }
+  .live .cells { touch-action: none; }
+  .live .cell { cursor: pointer; }
+  .cell:focus-visible { outline: 3px solid var(--ink); outline-offset: 1px; z-index: 3; }
+  @media (hover: hover) {
+    .live .cell:hover { transform: scale(1.45); z-index: 4; border: 2px solid var(--paper); box-shadow: 0 0 0 3px var(--ink), 0 6px 14px rgba(0, 0, 0, 0.3); border-radius: 6px; }
+  }
+  .cell.mine { box-shadow: inset 0 0 0 3px var(--paper), inset 0 0 0 5px var(--ink); z-index: 2; }
+  .cell.target { z-index: 3; box-shadow: 0 0 0 3px var(--paper), 0 0 0 6px var(--ink); border-radius: 5px; animation: beat 1.4s ease-in-out infinite; }
+  .cell.ring1, .cell.ring2 { animation: ripple-cell 0.5s ease-out both; animation-delay: calc(var(--d) * 140ms); }
+
+  .overlay { position: absolute; inset: 0; pointer-events: none; }
+  .ripple { position: absolute; width: 0; height: 0; z-index: 4; }
+  .wave {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 40px;
+    height: 40px;
+    translate: -50% -50%;
+    border: 4px solid var(--paper);
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px var(--ink);
+    opacity: 0;
+    animation: wave 1.5s ease-out forwards;
+  }
+  .w2 { animation-delay: 0.22s; }
+  .w3 { animation-delay: 0.44s; }
+  .square {
+    position: absolute;
+    left: 0;
+    top: 0;
+    translate: -50% -50%;
+    z-index: 4;
+    border: 3px dashed var(--ink);
+    border-radius: 8px;
+    animation: square-in 0.5s cubic-bezier(0.2, 1.6, 0.4, 1) both;
+  }
+  .s1 { animation-delay: 0.1s; }
+  .s2 { animation-delay: 0.25s; border-style: dotted; opacity: 0.7; }
+
+  .pin {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    translate: calc(-50% + var(--shift, 0px)) -100%;
+    z-index: 5;
+    filter: drop-shadow(0 3px 0 rgba(27, 31, 59, 0.35));
+    animation: pin-drop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1) both;
+  }
+  .pin.locked .pin-tip { border-top-color: var(--teal-ink); }
+  .pin-tip { width: 0; height: 0; margin-top: -2px; border: 7px solid transparent; border-top: 11px solid var(--ink); border-bottom: 0; }
+  .pin.dropped { animation-name: pin-fall; animation-duration: 0.55s; }
+  .pin.mine-pin { z-index: 6; }
+  .pin-points {
+    position: absolute;
+    top: -22px;
+    font-family: var(--font-display);
+    font-size: 18px;
+    white-space: nowrap;
+    color: var(--paper);
+    -webkit-text-stroke: 3px var(--ink);
+    paint-order: stroke fill;
+    animation: pop 0.4s cubic-bezier(0.2, 1.8, 0.4, 1) both;
+  }
+
+  .loupe {
+    position: absolute;
+    z-index: 8;
+    width: 76px;
+    height: 76px;
+    translate: -50% calc(-100% - 22px);
+    background: var(--hue);
+    border: 4px solid var(--paper);
+    border-radius: 50% 50% 50% 8px;
+    rotate: -45deg;
+    box-shadow: 0 0 0 3px var(--ink), 0 10px 18px rgba(0, 0, 0, 0.3);
+  }
+  .loupe-label {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    translate: -50% -50%;
+    rotate: 45deg;
+    font-weight: 900;
+    font-size: 13px;
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    border-radius: 999px;
+    padding: 0 6px;
+  }
+
+  /* The side */
+  .scoring ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-weight: 800; font-size: 14px; }
+  .track { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .who { display: flex; align-items: center; gap: 4px; font-weight: 900; font-size: 13px; background: var(--paper); border: 3px solid var(--ink); border-radius: 12px; padding: 2px 8px 2px 3px; opacity: 0.6; }
+  .who.placed { opacity: 1; }
+  .who.locked { opacity: 1; background: var(--sun-soft); }
+  .who-state { font-size: 14px; }
+  .answer { display: flex; align-items: center; gap: 12px; }
+  .answer-swatch { width: 64px; height: 64px; flex-shrink: 0; border: var(--line) solid var(--ink); border-radius: var(--radius); animation: stamp 0.45s cubic-bezier(0.2, 1.8, 0.4, 1); }
+  .answer-label { font-family: var(--font-display); font-size: 34px; line-height: 1; }
+  .pins { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+  .pin-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto 50px; align-items: center; gap: 8px; font-weight: 900; border-radius: 12px; padding: 2px 6px; animation: pop 0.35s cubic-bezier(0.2, 1.8, 0.4, 1) both; }
+  .pin-row.mine { background: var(--sun-soft); }
+  .pin-row.giver { border-top: 3px dashed rgba(27, 31, 59, 0.25); border-radius: 0; padding-top: 6px; animation-delay: 1.4s; }
+  .pin-row.empty { display: block; color: var(--muted); }
+  .pin-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pin-dist { color: var(--muted); font-size: 13px; }
+  .pin-pts { text-align: right; color: var(--teal-ink); }
+  .past { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .past-row { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 14px; }
+  .past-swatch { width: 22px; height: 22px; flex-shrink: 0; border: 3px solid var(--ink); border-radius: 6px; }
+  .past-clue { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .past-who { color: var(--muted); font-size: 13px; }
+
+  @keyframes deal { from { translate: 0 18px; opacity: 0; } }
+  @keyframes stamp { from { scale: 2.2; opacity: 0; rotate: -6deg; } 60% { scale: 0.94; opacity: 1; } }
+  @keyframes glow { from { box-shadow: inset 0 -8px 0 rgba(0, 0, 0, 0.12), 0 0 0 0 rgba(255, 255, 255, 0); } to { box-shadow: inset 0 -8px 0 rgba(0, 0, 0, 0.12), 0 0 0 6px rgba(255, 204, 51, 0.6); } }
+  @keyframes dot { 0%, 60%, 100% { opacity: 0.2; } 30% { opacity: 1; } }
+  @keyframes beat { 50% { transform: scale(1.12); } }
+  @keyframes ripple-cell { 0% { filter: brightness(1); } 40% { filter: brightness(1.35) saturate(1.2); transform: scale(1.12); } 100% { filter: brightness(1); transform: scale(1); } }
+  @keyframes wave { 0% { scale: 0.3; opacity: 0.95; } 100% { scale: 7; opacity: 0; } }
+  @keyframes square-in { from { scale: 0.2; opacity: 0; } }
+  @keyframes pin-drop { from { translate: calc(-50% + var(--shift, 0px)) -160%; opacity: 0; } }
+  @keyframes pin-fall { 0% { translate: calc(-50% + var(--shift, 0px)) -420%; opacity: 0; } 60% { opacity: 1; translate: calc(-50% + var(--shift, 0px)) -88%; } 100% { translate: calc(-50% + var(--shift, 0px)) -100%; opacity: 1; } }
+  @keyframes pop { from { scale: 0.3; opacity: 0; } }
+
+  @media (width < 900px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    .cells { max-height: none; aspect-ratio: 16 / 11; }
+  }
+  @media (width < 600px) {
+    .board { grid-template-columns: 12px minmax(0, 1fr); grid-template-rows: 14px auto; padding: 6px 6px 8px 4px; gap: 2px; }
+    .col-labels span, .row-labels span { font-size: 10px; }
+    .cells { aspect-ratio: 16 / 13; min-height: 0; }
+    .cell { border-width: 0.5px; border-radius: 2px; }
+    .pin { scale: 0.68; transform-origin: 50% 100%; }
+    .pin-points { font-size: 22px; }
+    .loupe { width: 64px; height: 64px; }
+    .clue-card { padding: 10px 12px; gap: 10px; }
+    .clue-card.giving { flex-direction: column; }
+    .secret-swatch { width: 100%; height: 56px; }
+    .clue-input { font-size: 18px; }
+    .waiting-text { font-size: 20px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .clue-card, .clue-text, .secret-swatch, .dots span, .cell.target, .cell.ring1, .cell.ring2, .square, .pin, .pin-points, .pin-row, .answer-swatch { animation: none; }
+    .wave { display: none; }
+  }
+</style>

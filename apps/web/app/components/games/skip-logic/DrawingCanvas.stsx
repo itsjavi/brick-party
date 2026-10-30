@@ -1,0 +1,432 @@
+import { CANVAS_UNITS, DRAW_COLORS, DRAW_SIZES, fillPathData, paintOrder, shapePathData } from "@brick/game";
+import { useEffect, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { playSfx } from "../../../lib/audio";
+import { bucketFill } from "./fill";
+import { strokePath } from "./paths";
+import { bigEnough, shapePoints, type ShapeTool } from "./shapes";
+import type { LocalStroke } from "./simplify";
+
+const COLOR_NAMES = ["Ink", "White", "Coral", "Sun", "Teal", "Sky", "Grape", "Rose", "Gray"];
+/** Swatches in toolbar order: the stored order keeps old drawings' colors, so gray sits at the end of it. */
+const SWATCHES = [0, 8, 1, 2, 3, 4, 5, 6, 7];
+const SIZE_NAMES = ["Fine", "Medium", "Thick", "Huge"];
+
+type Tool = "pen" | ShapeTool | "fill";
+const TOOLS: { id: Tool; name: string; icon: ReactNode }[] = [
+  { id: "pen", name: "Pen", icon: <path d="M4 20l1.5-5.5L16 4l4 4L9.5 18.5zM13.5 6.5l4 4" /> },
+  { id: "rect", name: "Rectangle (Shift for a square)", icon: <rect x="4" y="6" width="16" height="12" rx="1" /> },
+  { id: "ellipse", name: "Ellipse (Shift for a circle)", icon: <ellipse cx="12" cy="12" rx="8.5" ry="6.5" /> },
+  { id: "triangle", name: "Triangle", icon: <path d="M12 4.5l8.5 15h-17z" /> },
+  {
+    id: "fill",
+    name: "Bucket: fill an area",
+    icon: (
+      <>
+        <path d="M5 11l7-7 7 7-7 7z" />
+        <path d="M5 11h14" />
+        <path d="M20 15c0 0 1.8 2.3 1.8 3.4a1.8 1.8 0 0 1-3.6 0C18.2 17.3 20 15 20 15z" />
+      </>
+    ),
+  },
+];
+
+const clampUnit = (n: number) => Math.min(CANVAS_UNITS, Math.max(0, n));
+const flat = (stroke: LocalStroke) => stroke.points.flatMap(([x, y]) => [x!, y!]);
+
+/**
+ * The drawing board. Finished strokes render through React; the stroke in progress is painted
+ * straight into its SVG path once per frame, so the line keeps up with the pointer.
+ */
+export function DrawingCanvas({
+  strokes,
+  onCommit,
+  onUndo,
+  onClear,
+  pendingRef,
+  disabled = false,
+  actions,
+  faded,
+  guide,
+}: {
+  strokes: LocalStroke[];
+  onCommit: (stroke: LocalStroke) => void;
+  onUndo: () => void;
+  onClear: () => void;
+  /** Holds the stroke being drawn, so a timeout can still submit it. */
+  pendingRef: MutableRefObject<LocalStroke | null>;
+  disabled?: boolean;
+  /** Rendered beside the toolbar (the submit button), so the whole task fits a laptop screen. */
+  actions?: ReactNode;
+  /** Strokes drawn see-through, like the other layers while one is being drawn (Doodle Champions' parts). */
+  faded?: (stroke: LocalStroke) => boolean;
+  /** Drawn under the strokes, in canvas units: a guide such as the floor line. */
+  guide?: ReactNode;
+}) {
+  const [tool, setTool] = useState<Tool>("pen");
+  const [color, setColor] = useState(0);
+  /** The inside colour for shapes (rectangle, ellipse, triangle), or `null` for an outline only. */
+  const [fillColor, setFillColor] = useState<number | null>(null);
+  const [size, setSize] = useState(1);
+  const svg = useRef<SVGSVGElement>(null);
+  const live = useRef<SVGPathElement>(null);
+  const liveShape = useRef<SVGPathElement>(null);
+  /** The stroke being drawn; a shape also keeps which one it is and where its drag started. */
+  const active = useRef<{ pointerId: number; stroke: LocalStroke; rect: DOMRect; shape?: { tool: ShapeTool; anchor: number[] } } | null>(null);
+  const frame = useRef(0);
+  const cache = useRef(new WeakMap<LocalStroke, string>());
+
+  const pathOf = (stroke: LocalStroke) => {
+    let d = cache.current.get(stroke);
+    if (d === undefined) {
+      if (stroke.k === "fill") d = fillPathData(flat(stroke));
+      else if (stroke.k === "shape") d = shapePathData(flat(stroke));
+      else d = strokePath(stroke.points, stroke.w, { pen: stroke.pen });
+      cache.current.set(stroke, d);
+    }
+    return d;
+  };
+
+  const paintLive = () => {
+    frame.current = 0;
+    const a = active.current;
+    const path = a?.stroke.k === "shape" ? liveShape.current : live.current;
+    if (!a || !path) return;
+    const hex = DRAW_COLORS[a.stroke.c] ?? DRAW_COLORS[0]!;
+    if (a.stroke.k === "shape") {
+      path.setAttribute("d", shapePathData(flat(a.stroke)));
+      path.setAttribute("fill", fillColor === null ? "none" : (DRAW_COLORS[fillColor] ?? "none"));
+      path.setAttribute("stroke", hex);
+      path.setAttribute("stroke-width", String(DRAW_SIZES[a.stroke.w] ?? DRAW_SIZES[1]));
+    } else {
+      path.setAttribute("d", strokePath(a.stroke.points, a.stroke.w, { pen: a.stroke.pen, done: false }));
+      path.setAttribute("fill", hex);
+    }
+  };
+
+  const toPoint = (e: PointerEvent, rect: DOMRect): number[] => [
+    clampUnit(((e.clientX - rect.left) / rect.width) * CANVAS_UNITS),
+    clampUnit(((e.clientY - rect.top) / rect.height) * CANVAS_UNITS),
+    e.pointerType === "pen" ? e.pressure || 0.5 : 0.5,
+  ];
+
+  const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (disabled || active.current || !svg.current) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    const rect = svg.current.getBoundingClientRect();
+    const point = toPoint(e.nativeEvent, rect);
+    if (tool === "fill") {
+      const filled = bucketFill(strokes, point[0]!, point[1]!, color, pathOf);
+      if (filled) {
+        playSfx("pop");
+        onCommit(filled);
+      }
+      return;
+    }
+    svg.current.setPointerCapture(e.pointerId);
+    if (tool === "pen") {
+      const stroke: LocalStroke = { c: color, w: size, pen: e.pointerType === "pen", points: [point] };
+      active.current = { pointerId: e.pointerId, stroke, rect };
+      pendingRef.current = stroke;
+    } else {
+      // A shape's outline only counts once it's dragged out, so a timeout doesn't submit a dot.
+      const stroke: LocalStroke = { c: color, w: size, k: "shape", points: shapePoints(tool, point, point) };
+      active.current = { pointerId: e.pointerId, stroke, rect, shape: { tool, anchor: point } };
+    }
+    paintLive();
+  };
+
+  const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const a = active.current;
+    if (!a || a.pointerId !== e.pointerId) return;
+    if (a.shape) {
+      a.stroke.points = shapePoints(a.shape.tool, a.shape.anchor, toPoint(e.nativeEvent, a.rect), e.shiftKey);
+      pendingRef.current = bigEnough(a.stroke.points) ? a.stroke : null;
+      if (!frame.current) frame.current = requestAnimationFrame(paintLive);
+      return;
+    }
+    const coalesced = e.nativeEvent.getCoalescedEvents?.() ?? [];
+    for (const ev of coalesced.length ? coalesced : [e.nativeEvent]) a.stroke.points.push(toPoint(ev, a.rect));
+    if (!frame.current) frame.current = requestAnimationFrame(paintLive);
+  };
+
+  const finish = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const a = active.current;
+    if (!a || a.pointerId !== e.pointerId) return;
+    active.current = null;
+    pendingRef.current = null;
+    if (frame.current) cancelAnimationFrame(frame.current);
+    frame.current = 0;
+    live.current?.setAttribute("d", "");
+    liveShape.current?.setAttribute("d", "");
+    if (a.shape && !bigEnough(a.stroke.points)) return;
+    // A filled shape is a solid fill under its outline: fills always paint under lines (DECISION-16).
+    if (a.shape && fillColor !== null) {
+      const ring = a.stroke.points.map(([x, y]) => [x!, y!]);
+      onCommit({ c: fillColor, w: a.stroke.w, k: "fill", points: [...ring, ring[0]!] });
+    }
+    onCommit(a.stroke);
+  };
+
+  useEffect(() => {
+    if (disabled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        onUndo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [disabled, onUndo]);
+
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+
+  return (
+    <div className="board">
+      <div className="easel">
+        <div className="tool-column" role="radiogroup" aria-label="Tool">
+          {TOOLS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="radio"
+              aria-checked={tool === t.id}
+              aria-label={t.name}
+              title={t.name}
+              className={tool === t.id ? "size picked" : "size"}
+              disabled={disabled}
+              onClick={() => {
+                playSfx("click");
+                setTool(t.id);
+              }}
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1b1f3b" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                {t.icon}
+              </svg>
+            </button>
+          ))}
+        </div>
+        <svg
+          ref={svg}
+          className={["canvas", disabled ? "off" : "", tool === "fill" ? "bucket" : ""].join(" ")}
+          viewBox={`0 0 ${CANVAS_UNITS} ${CANVAS_UNITS}`}
+          role="img"
+          aria-label="Drawing canvas"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={finish}
+          onPointerCancel={finish}
+          onLostPointerCapture={finish}
+        >
+          <rect width={CANVAS_UNITS} height={CANVAS_UNITS} fill="#ffffff" />
+          {guide}
+          {paintOrder(strokes).map((s, i) => {
+            const hex = DRAW_COLORS[s.c] ?? DRAW_COLORS[0];
+            const opacity = faded?.(s) ? 0.28 : undefined;
+            if (s.k === "fill") return <path key={i} d={pathOf(s)} fill={hex} fillRule="evenodd" opacity={opacity} />;
+            if (s.k === "shape") {
+              return <path key={i} d={pathOf(s)} fill="none" stroke={hex} strokeWidth={DRAW_SIZES[s.w]} strokeLinejoin="round" strokeLinecap="round" opacity={opacity} />;
+            }
+            return <path key={i} d={pathOf(s)} fill={hex} opacity={opacity} />;
+          })}
+          <path ref={live} d="" />
+          <path ref={liveShape} d="" fill="none" strokeLinejoin="round" strokeLinecap="round" />
+        </svg>
+      </div>
+
+      <div className="tool-row">
+      <div className="tools" role="toolbar" aria-label="Drawing tools">
+        <div className="trow">
+          <span className="group-label">Line</span>
+          <div className="group" role="radiogroup" aria-label="Line colour">
+            {SWATCHES.map((i) => (
+              <button
+                key={i}
+                type="button"
+                role="radio"
+                aria-checked={color === i}
+                aria-label={COLOR_NAMES[i]}
+                title={COLOR_NAMES[i]}
+                className={color === i ? "swatch picked" : "swatch"}
+                style={{ background: DRAW_COLORS[i] }}
+                disabled={disabled}
+                onClick={() => {
+                  playSfx("click");
+                  setColor(i);
+                }}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="trow">
+          <span className="group-label">Fill</span>
+          <div className={["group", "fills", tool === "pen" || tool === "fill" ? "dim" : ""].join(" ")} role="radiogroup" aria-label="Shape fill colour">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={fillColor === null}
+              aria-label="No fill"
+              title="Shapes: outline only"
+              className={fillColor === null ? "swatch none picked" : "swatch none"}
+              disabled={disabled}
+              onClick={() => {
+                playSfx("click");
+                setFillColor(null);
+              }}
+            />
+            {SWATCHES.map((i) => (
+              <button
+                key={i}
+                type="button"
+                role="radio"
+                aria-checked={fillColor === i}
+                aria-label={`${COLOR_NAMES[i]} fill`}
+                title={`Shapes filled with ${COLOR_NAMES[i]!.toLowerCase()}`}
+                className={fillColor === i ? "swatch picked" : "swatch"}
+                style={{ background: DRAW_COLORS[i] }}
+                disabled={disabled}
+                onClick={() => {
+                  playSfx("click");
+                  setFillColor(i);
+                  // A fill colour only means something for shapes, so pick one if the pen is in hand.
+                  if (tool === "pen" || tool === "fill") setTool("rect");
+                }}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="trow">
+          <span className="group-label">Size</span>
+          <div className="group" role="radiogroup" aria-label="Brush size">
+            {DRAW_SIZES.map((px, i) => (
+              <button
+                key={px}
+                type="button"
+                role="radio"
+                aria-checked={size === i}
+                aria-label={SIZE_NAMES[i]}
+                title={SIZE_NAMES[i]}
+                className={size === i ? "size picked" : "size"}
+                disabled={disabled}
+                onClick={() => {
+                  playSfx("click");
+                  setSize(i);
+                }}
+              >
+                <span className="dot" style={{ width: 6 + i * 5, height: 6 + i * 5, background: DRAW_COLORS[color] }} />
+              </button>
+            ))}
+          </div>
+          <div className="group actions-group">
+            <button type="button" className="tool" onClick={onUndo} disabled={disabled || strokes.length === 0} title="Undo (Ctrl/Cmd+Z)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1b1f3b" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+              </svg>
+              Undo
+            </button>
+            <button
+              type="button"
+              className="tool"
+              onClick={() => {
+                playSfx("whoosh");
+                onClear();
+              }}
+              disabled={disabled || strokes.length === 0}
+            >
+              Clear
+            </button>
+          </div>
+      </div>
+      </div>
+      {actions}
+      </div>
+    </div>
+  );
+}
+
+<style>
+  .board { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
+  /* The tools stand beside the canvas, so picking one costs no height on a laptop screen. */
+  .easel { display: flex; align-items: flex-start; justify-content: center; gap: 12px; width: 100%; }
+  .tool-column {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 10px;
+  }
+  .canvas {
+    display: block;
+    width: min(100% - 76px, 540px, calc(100dvh - 470px));
+    min-width: 260px;
+    aspect-ratio: 1;
+    background: #ffffff;
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift);
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: crosshair;
+  }
+  .off { cursor: not-allowed; opacity: 0.85; }
+  .bucket { cursor: cell; }
+  .tool-row { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px; }
+  /* One rhythm for every control: 34px targets, 6px gaps inside a group, a hairline between groups. */
+  .tools {
+    --ctl: 34px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 10px 12px;
+  }
+  .trow { display: flex; align-items: center; gap: 12px; }
+  .trow + .trow { border-top: 2px solid #e2e8f0; padding-top: 8px; }
+  .group-label { width: 34px; font-weight: 900; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+  .group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .actions-group { margin-left: auto; }
+  .swatch, .size, .tool {
+    height: var(--ctl);
+    border: 3px solid var(--ink);
+    cursor: pointer;
+    transition: transform 0.1s, box-shadow 0.1s;
+  }
+  .swatch { width: var(--ctl); border-radius: 50%; padding: 0; }
+  .swatch:hover:not(:disabled), .size:hover:not(:disabled) { transform: translateY(-2px); }
+  /* Fill colours are rounded squares, so they read as "inside", not "line". */
+  .fills .swatch { border-radius: 9px; }
+  .fills.dim .swatch:not(.picked) { opacity: 0.5; }
+  .swatch.none { background: repeating-linear-gradient(45deg, #ffffff 0 5px, #e2e8f0 5px 10px); }
+  .size { width: var(--ctl); display: flex; align-items: center; justify-content: center; background: var(--paper); border-radius: 10px; padding: 0; }
+  .tool-column .size { --ctl: 40px; }
+  .dot { display: block; border-radius: 50%; border: 2px solid var(--ink); }
+  .picked { box-shadow: 0 0 0 2px var(--paper), 0 0 0 5px var(--ink); }
+  .tool {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 900;
+    font-size: 14px;
+    background: var(--mist);
+    border-radius: 10px;
+    box-shadow: 0 3px 0 var(--ink);
+    padding: 0 12px;
+  }
+  .tool:disabled, .swatch:disabled, .size:disabled { opacity: 0.45; cursor: not-allowed; }
+  .tool:active:not(:disabled) { translate: 0 3px; box-shadow: none; }
+
+  @media (width < 640px) {
+    .easel { flex-direction: column; align-items: center; }
+    .tool-column { flex-direction: row; }
+    .canvas { width: min(100%, 540px, calc(100dvh - 470px)); }
+  }
+</style>

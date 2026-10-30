@@ -1,0 +1,31 @@
+import { CANVAS_UNITS, paintOrder, type Stroke } from "@brick/game";
+import { useMemo } from "react";
+import { strokeSvgProps } from "./paths";
+
+/** A stored drawing, read-only, scaled to fit its box. */
+export function Drawing({ strokes, label, className }: { strokes: Stroke[]; label: string; className?: string }) {
+  const paths = useMemo(() => paintOrder(strokes).map(strokeSvgProps), [strokes]);
+  return (
+    <svg
+      className={["drawing", className ?? ""].join(" ")}
+      viewBox={`0 0 ${CANVAS_UNITS} ${CANVAS_UNITS}`}
+      role="img"
+      aria-label={label}
+    >
+      <rect width={CANVAS_UNITS} height={CANVAS_UNITS} fill="#ffffff" />
+      {paths.map((p, i) => (
+        <path key={i} {...p} />
+      ))}
+    </svg>
+  );
+}
+
+<style>
+  .drawing {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    background: #ffffff;
+  }
+</style>
