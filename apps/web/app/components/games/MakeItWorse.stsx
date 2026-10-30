@@ -1,0 +1,707 @@
+import {
+  MIW_BUDGET,
+  TRAPS,
+  TRAP_IDS,
+  formCost,
+  trapFits,
+  type MakeItWorseView,
+  type MiwForm,
+  type MiwSurvey,
+  type PlacedTrap,
+  type PlayerId,
+  type TrapId,
+} from "@brick/game";
+import { useEffect, useRef, useState } from "react";
+import { playSfx } from "../../lib/audio";
+import { TRAP_ICON } from "../../lib/icons";
+import { useChangeSfx } from "../../lib/use-phase-sfx";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { seatOf, type GameProps, type Seat } from "./types";
+import { formRandom, noteText } from "./worse/note";
+import { PlayForm, type FormSubmission } from "./worse/PlayForm.stsx";
+
+/** A submission the server hasn't confirmed yet (a dropped message, or one sent while paused) goes again after this. */
+const RESEND_MS = 2000;
+
+const KIND_LABEL = { choice: "Pick one", rating: "Rating", number: "Number", consent: "Checkbox" } as const;
+
+function banner(view: MakeItWorseView, me: PlayerId | null, name: (id: PlayerId) => string): string {
+  const run = view.run;
+  switch (view.phase) {
+    case "build":
+      if (!view.myForm) return "Everyone's building a terrible form";
+      return view.myForm.locked ? "Locked in. Waiting for the others..." : "Make this survey worse";
+    case "ready":
+      return run?.form.designerId === me ? "Your form is up!" : `Get ready: ${name(run!.form.designerId)}'s form`;
+    case "play":
+      if (run?.form.designerId === me) return "Watch them suffer";
+      if (run?.youFill) return run.submitted ? "Submitted! Watch the others" : "Fill it in! Fast!";
+      return "Watching the race";
+    case "reveal":
+      return run?.result?.sued ? `${name(run.form.designerId)} got sued!` : "How did they do?";
+    case "gallery":
+      return "The forms nobody had to fill in";
+    case "done":
+      return "That's a wrap";
+  }
+}
+
+export function MakeItWorse({ view, me, players, matchScore, act }: GameProps<MakeItWorseView>) {
+  const playing = view.phase === "play";
+  useMusic(view.phase === "build" ? "think" : playing ? "tension" : view.phase === "ready" ? null : "reveal");
+  const name = (id: PlayerId) => (id === me ? "You" : (seatOf(players, id)?.name ?? "?"));
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+  const run = view.run;
+
+  useChangeSfx(`${view.phase}:${view.round}`, (key) => {
+    const phase = String(key).split(":")[0];
+    if (phase === "ready" || phase === "gallery") return "whoosh";
+    if (phase === "play") return "start";
+    if (phase === "reveal") return run?.result?.sued ? "lose" : "reveal";
+    return null;
+  });
+
+  // Someone else getting to Submit lands with a pop on the watchers' screens.
+  const finished = run ? Object.values(run.progress).filter((p) => p.finished).length : 0;
+  const lastFinished = useRef(finished);
+  useEffect(() => {
+    if (playing && finished > lastFinished.current && !(run?.youFill && !run.submitted)) playSfx("drop");
+    lastFinished.current = finished;
+  }, [finished]);
+
+  // A submission goes again until the server has it, so a dropped message or a pause never loses a form.
+  const pending = useRef<{ round: number; action: unknown } | null>(null);
+  useEffect(() => {
+    const p = pending.current;
+    if (!p) return;
+    if (p.round !== view.round || view.phase !== "play" || run?.submitted) {
+      pending.current = null;
+      return;
+    }
+    const again = setInterval(() => act(p.action), RESEND_MS);
+    return () => clearInterval(again);
+  }, [view.round, view.phase, run?.submitted]);
+  const submit = (s: FormSubmission) => {
+    const action = { type: "submit", ...s };
+    pending.current = { round: view.round, action };
+    act(action);
+  };
+
+  return (
+    <div className="miw">
+      <GameHud
+        gameId="make-it-worse"
+        round={view.phase === "build" ? "Build" : view.phase === "gallery" || view.phase === "done" ? "Gallery" : `Form ${view.round + 1} of ${view.totalRounds}`}
+        banner={banner(view, me, name)}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={view.phase === "build" || playing}
+        score={matchScore + myPoints}
+      />
+
+      {view.phase === "build" ? <Builder view={view} players={players} act={act} /> : null}
+
+      {view.phase === "ready" && run ? (
+        <section className="ready">
+          <div className="ready-card">
+            <span className="ready-kicker">Form {view.round + 1} of {view.totalRounds}</span>
+            <DesignerTag id={run.form.designerId} players={players} name={name} big />
+            <span className="ready-traps">
+              {run.form.traps.length} trap{run.form.traps.length === 1 ? "" : "s"} inside{run.form.auto ? ", picked at random" : ""}
+            </span>
+            <p className="ready-hint">
+              {run.form.designerId === me
+                ? "Sit back. You built this."
+                : run.youFill
+                  ? "Read your sticky note: those are the answers to give. Every trap has a trick."
+                  : "Everyone else is about to fill this in."}
+            </p>
+          </div>
+          <StickyNote survey={view.survey} answers={run.answers} theirs={!run.youFill} />
+        </section>
+      ) : null}
+
+      {playing && run ? (
+        run.youFill && !run.submitted ? (
+          <section className="play">
+            <PlayForm
+              key={`${view.round}:${run.form.designerId}`}
+              survey={view.survey}
+              traps={run.form.traps}
+              seed={`${run.form.designerId}:${view.round}`}
+              onProgress={(done, stuck) => act({ type: "progress", done, stuck })}
+              onSubmit={submit}
+            />
+            <aside className="side">
+              <StickyNote survey={view.survey} answers={run.answers} />
+              <Board view={view} players={players} me={me} compact />
+            </aside>
+          </section>
+        ) : (
+          <section className="watch">
+            <div className="watch-head">
+              <DesignerTag id={run.form.designerId} players={players} name={name} />
+              <TrapRow traps={run.form.traps} survey={view.survey} />
+            </div>
+            <Board view={view} players={players} me={me} />
+            <StickyNote survey={view.survey} answers={run.answers} theirs={!run.youFill} />
+          </section>
+        )
+      ) : null}
+
+      {view.phase === "reveal" && run?.result ? <Reveal view={view} players={players} me={me} name={name} /> : null}
+
+      {view.phase === "gallery" || view.phase === "done" ? <Gallery forms={view.gallery} survey={view.survey} players={players} name={name} /> : null}
+    </div>
+  );
+}
+
+function DesignerTag({ id, players, name, big = false }: { id: PlayerId; players: Seat[]; name: (id: PlayerId) => string; big?: boolean }) {
+  const seat = seatOf(players, id);
+  return (
+    <span className={big ? "designer big" : "designer"}>
+      {seat ? <Brick avatar={seat.avatar} size={big ? "md" : "xs"} mood="happy" /> : null}
+      <span>
+        {big ? "by " : "Form by "}
+        <b>{name(id)}</b>
+      </span>
+    </span>
+  );
+}
+
+/** The answers to give, on a yellow note. */
+function StickyNote({ survey, answers, theirs = false }: { survey: MiwSurvey; answers: (number | boolean | null)[]; theirs?: boolean }) {
+  return (
+    <div className="note" aria-label={theirs ? "The sticky note: the answers they have to give" : "Your sticky note: the answers to give"}>
+      <span className="note-title">{theirs ? "Their answers" : "Your answers"}</span>
+      <ol className="note-list">
+        {survey.questions.map((q, i) => (
+          <li key={i}>
+            <span className="note-label">{q.label}</span>
+            <b className="note-answer">{noteText(q, answers[i] ?? null)}</b>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+/** Traps as chips with their icons, and the question each one sits on. */
+function TrapRow({ traps, survey }: { traps: readonly PlacedTrap[]; survey: MiwSurvey }) {
+  if (!traps.length) return <span className="no-traps">No traps at all. Suspicious.</span>;
+  return (
+    <ul className="chips">
+      {traps.map((t) => (
+        <li key={t.trap} className="chip">
+          <Icon name={TRAP_ICON[t.trap]} size={22} />
+          <span>
+            {TRAPS[t.trap].name}
+            {t.question !== undefined ? <span className="chip-on"> on {survey.questions[t.question]?.label}</span> : null}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Everyone's progress through the form, live. */
+function Board({ view, players, me, compact = false }: { view: MakeItWorseView; players: Seat[]; me: PlayerId | null; compact?: boolean }) {
+  const run = view.run!;
+  return (
+    <ul className={compact ? "board compact" : "board"} aria-label="Progress">
+      {run.fillers.map((id) => {
+        const p = run.progress[id] ?? { done: 0, stuck: null, finished: false };
+        const seat = seatOf(players, id);
+        const share = p.finished ? 1 : p.done / run.checkpoints;
+        return (
+          <li key={id} className={[p.finished ? "lane done" : "lane", id === me ? "me" : ""].join(" ")}>
+            {seat ? <Brick avatar={seat.avatar} size="xs" mood={p.finished ? "happy" : p.stuck ? "sad" : "happy"} /> : null}
+            <span className="lane-name">{id === me ? "You" : (seat?.name ?? "?")}</span>
+            <span className="bar" aria-label={p.finished ? "Submitted" : `${p.done} of ${run.checkpoints} steps`}>
+              <span className="fill" style={{ width: `${Math.round(share * 100)}%` }} />
+            </span>
+            <span className="lane-state">
+              {p.finished ? (
+                "Submitted"
+              ) : p.stuck ? (
+                <span className="stuck" key={p.stuck}>
+                  <Icon name={TRAP_ICON[p.stuck]} size={18} />
+                  {compact ? null : TRAPS[p.stuck].name}
+                </span>
+              ) : (
+                `${p.done}/${run.checkpoints}`
+              )}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function Builder({ view, players, act }: { view: MakeItWorseView; players: Seat[]; act: (action: unknown) => void }) {
+  const mine = view.myForm;
+  const [traps, setTraps] = useState<PlacedTrap[]>(() => mine?.traps ?? []);
+  const [armed, setArmed] = useState<TrapId | null>(null);
+  const [nope, setNope] = useState<{ n: number; trap: TrapId } | null>(null);
+  const locked = !!mine?.locked;
+  const spent = formCost(traps);
+  const left = MIW_BUDGET - spent;
+  const survey = view.survey;
+
+  useEffect(() => {
+    if (!armed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setArmed(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [armed]);
+
+  if (!mine) {
+    return (
+      <section className="build-wait">
+        <p className="muted">Everyone's busy sabotaging their own copy of this survey:</p>
+        <SurveyPreview survey={survey} traps={[]} />
+      </section>
+    );
+  }
+
+  const save = (next: PlacedTrap[], lock = false) => {
+    setTraps(next);
+    setArmed(null);
+    act({ type: "form", traps: next, lock });
+  };
+  const place = (trap: TrapId, question?: number) => {
+    playSfx("pop");
+    save([...traps, question === undefined ? { trap } : { trap, question }]);
+  };
+  const remove = (trap: TrapId) => {
+    playSfx("click");
+    save(traps.filter((t) => t.trap !== trap));
+  };
+  const pick = (trap: TrapId) => {
+    if (locked) return;
+    if (traps.some((t) => t.trap === trap)) return remove(trap);
+    if (TRAPS[trap].cost > left) {
+      playSfx("error");
+      setNope({ n: Date.now(), trap });
+      return;
+    }
+    if (TRAPS[trap].target === "form") return place(trap);
+    const spots = survey.questions.flatMap((_, i) => (trapFits(survey, trap, i) ? [i] : []));
+    if (spots.length === 1) return place(trap, spots[0]);
+    playSfx("click");
+    setArmed(armed === trap ? null : trap);
+  };
+
+  return (
+    <section className="build">
+      <div className="palette-side">
+        <div className="budget" aria-label={`${left} of ${MIW_BUDGET} budget points left`}>
+          <span className="budget-label">Budget</span>
+          <span className="pips">
+            {Array.from({ length: MIW_BUDGET }, (_, i) => (
+              <span key={i} className={i < spent ? "pip spent" : "pip"} />
+            ))}
+          </span>
+          <span className="budget-left">{left} left</span>
+        </div>
+        <ul className="palette" aria-label="Traps">
+          {TRAP_IDS.map((id) => {
+            const info = TRAPS[id];
+            const placed = traps.some((t) => t.trap === id);
+            const tooDear = !placed && info.cost > left;
+            return (
+              <li key={id}>
+                <button
+                  type="button"
+                  className={["trap", placed ? "placed" : "", armed === id ? "armed" : "", tooDear ? "dear" : "", nope?.trap === id ? "nope" : ""].join(" ")}
+                  key={nope?.trap === id ? nope.n : id}
+                  aria-pressed={placed}
+                  aria-label={`${info.name}, costs ${info.cost}: ${info.does}`}
+                  disabled={locked}
+                  onClick={() => pick(id)}
+                >
+                  <Icon name={TRAP_ICON[id]} size={34} />
+                  <span className="trap-body">
+                    <span className="trap-name">{info.name}</span>
+                    <span className="trap-does">{info.does}</span>
+                    <span className="trap-where">{info.target === "form" ? "Whole form" : info.target === "any" ? "Any question" : `${KIND_LABEL[info.target]} question`}</span>
+                  </span>
+                  <span className="cost" aria-hidden="true">
+                    {Array.from({ length: info.cost }, (_, i) => (
+                      <span key={i} className="cost-pip" />
+                    ))}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
+      <div className="preview-side">
+        <SurveyPreview
+          survey={survey}
+          traps={traps}
+          armed={armed}
+          onPlace={armed ? (q) => place(armed, q) : undefined}
+          onRemove={locked ? undefined : remove}
+        />
+        <div className="lock-row">
+          {locked ? (
+            <LockedList view={view} players={players} />
+          ) : (
+            <>
+              <p className="hint">
+                {armed ? `Now click a ${TRAPS[armed].target === "any" ? "" : `${KIND_LABEL[TRAPS[armed].target as keyof typeof KIND_LABEL].toLowerCase()} `}question for ${TRAPS[armed].name}. Esc to cancel.` : traps.length ? "Click a placed trap to take it off." : "Pick traps from the palette. Every one has a trick, so be as mean as you like."}
+              </p>
+              <Button size="lg" tone="coral" onClick={() => save(traps, true)} disabled={!traps.length}>
+                Lock it in
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LockedList({ view, players }: { view: MakeItWorseView; players: Seat[] }) {
+  return (
+    <div className="locked">
+      <span className="locked-title">Locked in! Still building:</span>
+      <ul className="locked-who">
+        {view.builders
+          .filter((id) => !view.lockedIds.includes(id))
+          .map((id) => {
+            const seat = seatOf(players, id);
+            return seat ? (
+              <li key={id}>
+                <Brick avatar={seat.avatar} size="xs" mood="sleepy" />
+                {seat.name}
+              </li>
+            ) : null;
+          })}
+      </ul>
+    </div>
+  );
+}
+
+/** The base survey as a builder sees it, with the traps placed on its questions and its Submit button. */
+function SurveyPreview({
+  survey,
+  traps,
+  armed = null,
+  onPlace,
+  onRemove,
+}: {
+  survey: MiwSurvey;
+  traps: readonly PlacedTrap[];
+  armed?: TrapId | null;
+  onPlace?: (question: number) => void;
+  onRemove?: (trap: TrapId) => void;
+}) {
+  const badge = (t: PlacedTrap) => (
+    <button key={t.trap} type="button" className="badge" onClick={onRemove ? () => onRemove(t.trap) : undefined} disabled={!onRemove} aria-label={`${TRAPS[t.trap].name}${onRemove ? ": take it off" : ""}`}>
+      <Icon name={TRAP_ICON[t.trap]} size={20} />
+      {TRAPS[t.trap].name}
+      {onRemove ? <span className="badge-x" aria-hidden="true">×</span> : null}
+    </button>
+  );
+  return (
+    <div className="preview">
+      <div className="preview-head">
+        <Icon name="worseForm" size={30} />
+        <div>
+          <span className="preview-title">{survey.title}</span>
+          <span className="preview-intro">{survey.intro}</span>
+        </div>
+      </div>
+      <ol className="pq-list">
+        {survey.questions.map((q, i) => {
+          const fits = armed !== null && trapFits(survey, armed, i);
+          return (
+            <li key={i} className={["pq", fits ? "fits" : "", armed && !fits ? "dim" : ""].join(" ")}>
+              {fits && onPlace ? <button type="button" className="pq-target" onClick={() => onPlace(i)} aria-label={`Put ${TRAPS[armed!].name} on question ${i + 1}`} /> : null}
+              <span className="pq-kind">{KIND_LABEL[q.kind]}</span>
+              <span className="pq-text">{q.text}</span>
+              {q.kind === "choice" ? <span className="pq-extra">{q.options.join(" · ")}</span> : null}
+              {q.kind === "rating" ? <span className="pq-extra">1 {q.low} … 5 {q.high}</span> : null}
+              <span className="pq-badges">{traps.filter((t) => t.question === i).map(badge)}</span>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="pq-foot">
+        <span className="pq-kind">Whole form and Submit</span>
+        <span className="pq-badges">{traps.filter((t) => t.question === undefined).map(badge)}</span>
+        <span className="fake-submit">Submit</span>
+      </div>
+    </div>
+  );
+}
+
+function Reveal({ view, players, me, name }: { view: MakeItWorseView; players: Seat[]; me: PlayerId | null; name: (id: PlayerId) => string }) {
+  const run = view.run!;
+  const r = run.result!;
+  const total = view.survey.questions.length;
+  return (
+    <section className="reveal">
+      <div className="reveal-head">
+        <DesignerTag id={run.form.designerId} players={players} name={name} />
+        {r.sued ? (
+          <span className="sued">Sued! Fewer than half finished, so no points.</span>
+        ) : (
+          <span className="earned">
+            {name(run.form.designerId)} {run.form.designerId === me ? "earn" : "earns"} <b>+{r.designerPoints}</b> for the trouble
+          </span>
+        )}
+      </div>
+      <ul className="trap-cards">
+        {r.traps.length ? null : <li className="muted">A clean form. Nobody fell for anything, because there was nothing to fall for.</li>}
+        {r.traps.map((t, i) => (
+          <li key={t.trap} className="trap-card" style={{ animationDelay: `${0.15 + i * 0.12}s` }}>
+            <div className="tc-head">
+              <Icon name={TRAP_ICON[t.trap]} size={36} />
+              <span className="tc-name">
+                {TRAPS[t.trap].name}
+                {t.question !== undefined ? <span className="chip-on"> on {view.survey.questions[t.question]?.label}</span> : null}
+              </span>
+            </div>
+            <div className="caught">
+              {t.fellIds.length ? (
+                <>
+                  <span className="caught-label">Caught</span>
+                  {t.fellIds.map((id) => {
+                    const seat = seatOf(players, id);
+                    return seat ? <Brick key={id} avatar={seat.avatar} size="xs" mood="sad" /> : null;
+                  })}
+                  <span className="caught-names">{t.fellIds.map(name).join(", ")}</span>
+                </>
+              ) : (
+                <span className="caught-label none">Caught nobody</span>
+              )}
+            </div>
+            <p className="tc-line">
+              <b>Trick:</b> {TRAPS[t.trap].trick}
+            </p>
+            <p className="tc-line fix">
+              <b>Real fix:</b> {TRAPS[t.trap].fix}
+            </p>
+          </li>
+        ))}
+      </ul>
+      <ol className="results">
+        {r.players.map((p) => {
+          const seat = seatOf(players, p.playerId);
+          return (
+            <li key={p.playerId} className={p.playerId === me ? "res me" : "res"}>
+              {seat ? <Brick avatar={seat.avatar} size="xs" mood={p.finished ? "happy" : "sad"} /> : null}
+              <span className="res-name">{name(p.playerId)}</span>
+              {p.playerId === r.fastestId ? <span className="tag fast">Fastest</span> : null}
+              {p.upsold ? <span className="tag premium">Bought Premium</span> : null}
+              <span className="res-stat">{p.finished ? `${p.seconds}s · ${p.correct}/${total} right` : "Didn't finish"}</span>
+              <span className="res-points">+{p.points}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+function Gallery({ forms, survey, players, name }: { forms: MiwForm[]; survey: MiwSurvey; players: Seat[]; name: (id: PlayerId) => string }) {
+  if (!forms.length) return <p className="wrap muted">Every form got played. Nobody escaped.</p>;
+  return (
+    <section className="gallery">
+      <p className="gallery-intro">These forms never got played. Imagine filling them in.</p>
+      <ul className="gallery-list">
+        {forms.map((f, i) => (
+          <li key={f.designerId} className="g-card" style={{ rotate: `${Math.round(formRandom(f.designerId)() * 6 - 3)}deg`, animationDelay: `${i * 0.15}s` }}>
+            <DesignerTag id={f.designerId} players={players} name={name} />
+            {f.auto ? <span className="tag">Random traps</span> : null}
+            <TrapRow traps={f.traps} survey={survey} />
+            <span className="g-cost">
+              {formCost(f.traps)} of {MIW_BUDGET} points of pure evil
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+<style>
+  .miw { position: relative; display: flex; flex-direction: column; gap: 16px; }
+  .muted { font-weight: 800; color: var(--paper); text-shadow: 0 2px 0 var(--ink); }
+  .hint { margin: 0; font-weight: 800; color: var(--paper); background: var(--ink); border-radius: var(--radius-sm); padding: 6px 12px; max-width: 420px; }
+
+  .build { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(0, 1.2fr); gap: 18px; align-items: start; }
+  .palette-side, .preview-side { display: flex; flex-direction: column; gap: 12px; }
+  .budget { display: flex; align-items: center; gap: 10px; background: var(--paper); border: 3px solid var(--ink); border-radius: var(--radius-sm); padding: 6px 12px; box-shadow: var(--lift-sm); }
+  .budget-label { font-family: var(--font-display); font-size: 18px; }
+  .pips { display: flex; gap: 4px; flex-grow: 1; }
+  .pip { width: 18px; height: 18px; border: 3px solid var(--ink); border-radius: 6px; background: var(--sun); }
+  .pip.spent { background: var(--slate); opacity: 0.5; }
+  .budget-left { font-weight: 900; }
+  .palette { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; max-height: 560px; overflow-y: auto; padding: 4px 4px 8px; }
+  .trap {
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px;
+    align-items: start;
+    text-align: left;
+    font: inherit;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 0 var(--ink);
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: translate 0.1s;
+  }
+  .trap:hover:not(:disabled) { translate: 0 -2px; }
+  .trap.placed { background: var(--sun-soft); outline: 4px solid var(--coral); outline-offset: 1px; }
+  .trap.armed { background: #ddf4ff; outline: 4px dashed var(--sky); }
+  .trap.dear { opacity: 0.45; }
+  .trap.nope { animation: shake 0.35s; }
+  .trap:disabled { cursor: default; }
+  .trap-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .trap-name { font-family: var(--font-display); font-size: 17px; line-height: 1.1; }
+  .trap-does { font-size: 13px; font-weight: 700; color: var(--muted); }
+  .trap-where { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.4px; color: var(--grape); }
+  .cost { display: flex; gap: 3px; padding-top: 3px; }
+  .cost-pip { width: 10px; height: 10px; border: 2px solid var(--ink); border-radius: 3px; background: var(--sun); }
+
+  .preview { position: relative; background: var(--paper); border: var(--line) solid var(--ink); border-radius: var(--radius); box-shadow: var(--lift); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .preview-head { display: flex; gap: 10px; align-items: flex-start; }
+  .preview-title { display: block; font-family: var(--font-display); font-size: 22px; line-height: 1.1; }
+  .preview-intro { display: block; font-weight: 700; color: var(--muted); font-size: 14px; }
+  .pq-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .pq { position: relative; display: flex; flex-direction: column; gap: 3px; border: 2px solid #d0d7de; border-radius: 12px; padding: 8px 12px; transition: opacity 0.2s, background-color 0.2s; }
+  .pq.fits { border: 3px dashed var(--sky); background: #ddf4ff; animation: breathe 1.2s ease-in-out infinite; }
+  .pq.dim { opacity: 0.4; }
+  .pq-target { position: absolute; inset: 0; z-index: 1; background: none; border: 0; cursor: copy; border-radius: 12px; }
+  .pq-kind { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
+  .pq-text { font-weight: 800; }
+  .pq-extra { font-size: 13px; color: var(--muted); font-weight: 700; }
+  .pq-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pq-badges:empty { display: none; }
+  .pq-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 2px solid #e5e7eb; padding-top: 10px; }
+  .pq-foot .pq-badges { flex-grow: 1; }
+  .fake-submit { margin-left: auto; font-weight: 900; background: var(--sun); border: 3px solid var(--ink); border-radius: 10px; padding: 4px 14px; box-shadow: 0 3px 0 var(--ink); }
+  .badge { position: relative; z-index: 2; display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 13px; font-weight: 900; background: var(--sun-soft); border: 2px solid var(--ink); border-radius: 999px; padding: 2px 10px 2px 4px; cursor: pointer; animation: popin 0.3s cubic-bezier(0.2, 1.6, 0.4, 1); }
+  .badge:disabled { cursor: default; }
+  .badge-x { font-size: 16px; line-height: 1; margin-left: 2px; color: var(--coral-ink); }
+  .lock-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+  .locked { display: flex; flex-direction: column; gap: 6px; }
+  .locked-title { font-family: var(--font-display); font-size: 20px; }
+  .locked-who { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  .locked-who li { display: flex; align-items: center; gap: 6px; font-weight: 900; background: var(--paper); border: 2px solid var(--ink); border-radius: 999px; padding: 2px 10px 2px 3px; }
+  .build-wait { display: flex; flex-direction: column; gap: 10px; max-width: 640px; }
+
+  .ready { display: flex; justify-content: center; align-items: center; gap: 28px; flex-wrap: wrap; padding: 20px 0; }
+  .ready-card { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; background: var(--paper); border: var(--line) solid var(--ink); border-radius: var(--radius-lg); box-shadow: var(--lift); padding: 22px 30px; animation: popin 0.4s cubic-bezier(0.2, 1.6, 0.4, 1); }
+  .ready-kicker { font-family: var(--font-display); font-size: 20px; color: var(--coral); }
+  .ready-traps { font-weight: 900; background: var(--ink); color: var(--paper); border-radius: 999px; padding: 2px 12px; }
+  .ready-hint { margin: 0; max-width: 300px; font-weight: 800; color: var(--muted); }
+  .designer { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; }
+  .designer.big { flex-direction: column; font-size: 26px; font-family: var(--font-display); }
+  .designer.big b { font-weight: 400; }
+
+  .note {
+    background: #fff27a;
+    border: 3px solid var(--ink);
+    border-radius: 4px 4px 18px 4px;
+    box-shadow: var(--lift-sm);
+    padding: 12px 16px 14px;
+    rotate: 2deg;
+    min-width: 220px;
+    font-family: var(--font-body);
+  }
+  .note-title { font-family: var(--font-display); font-size: 20px; }
+  .note-list { margin: 6px 0 0; padding-left: 22px; display: flex; flex-direction: column; gap: 4px; }
+  .note-label { display: block; font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.4px; color: #6b5d00; }
+  .note-answer { font-size: 17px; }
+
+  .play { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 18px; align-items: start; }
+  .side { display: flex; flex-direction: column; gap: 18px; position: sticky; top: 12px; }
+  .watch { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "head head" "board note"; gap: 16px 22px; align-items: start; }
+  .watch-head { grid-area: head; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .watch .board { grid-area: board; }
+  .watch .note { grid-area: note; }
+
+  .no-traps { font-weight: 800; }
+  .chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-weight: 900; font-size: 14px; background: var(--paper); border: 2px solid var(--ink); border-radius: 999px; padding: 2px 10px 2px 4px; }
+  .chip-on { font-weight: 700; color: var(--muted); }
+
+  .board { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .lane { display: grid; grid-template-columns: auto 110px 1fr auto; gap: 10px; align-items: center; background: var(--paper); border: 3px solid var(--ink); border-radius: var(--radius-sm); padding: 6px 12px 6px 6px; }
+  .lane.me { background: var(--sun-soft); }
+  .lane.done { background: #dcfce7; }
+  .lane-name { font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { position: relative; height: 18px; border: 3px solid var(--ink); border-radius: 999px; background: var(--mist); overflow: hidden; }
+  .fill { position: absolute; inset: 0 auto 0 0; background: var(--teal); transition: width 0.5s cubic-bezier(0.2, 1.2, 0.4, 1); }
+  .lane.done .fill { background: var(--lime); }
+  .lane-state { display: inline-flex; align-items: center; gap: 4px; font-weight: 900; font-size: 13px; min-width: 70px; justify-content: flex-end; }
+  .stuck { display: inline-flex; align-items: center; gap: 4px; color: var(--coral-ink); animation: shake 0.35s; }
+  .board.compact .lane { grid-template-columns: auto 1fr auto; padding: 4px 8px 4px 4px; }
+  .board.compact .lane-name { display: none; }
+  .board.compact .lane-state { min-width: 0; }
+
+  .reveal { display: flex; flex-direction: column; gap: 14px; }
+  .reveal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+  .sued { font-family: var(--font-display); font-size: 24px; color: var(--paper); background: var(--coral); border: 3px solid var(--ink); border-radius: 12px; padding: 2px 14px; rotate: -3deg; animation: stamp 0.4s cubic-bezier(0.2, 1.8, 0.4, 1); }
+  .earned { font-weight: 800; font-size: 17px; }
+  .trap-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+  .trap-card { display: flex; flex-direction: column; gap: 6px; background: var(--paper); border: 3px solid var(--ink); border-radius: var(--radius-sm); box-shadow: var(--lift-sm); padding: 10px 12px; animation: deal 0.4s both; }
+  .tc-head { display: flex; align-items: center; gap: 8px; }
+  .tc-name { font-family: var(--font-display); font-size: 18px; line-height: 1.1; }
+  .caught { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .caught-label { font-weight: 900; font-size: 12px; text-transform: uppercase; color: var(--coral-ink); margin-right: 4px; }
+  .caught-label.none { color: var(--teal-ink); }
+  .caught-names { font-weight: 800; font-size: 13px; }
+  .tc-line { margin: 0; font-size: 14px; font-weight: 600; }
+  .tc-line.fix { color: var(--teal-ink); }
+  .results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-width: 640px; }
+  .res { display: flex; align-items: center; gap: 8px; background: var(--paper); border: 3px solid var(--ink); border-radius: var(--radius-sm); padding: 4px 12px 4px 4px; }
+  .res.me { background: var(--sun-soft); }
+  .res-name { font-weight: 900; }
+  .res-stat { margin-left: auto; font-weight: 800; color: var(--muted); }
+  .res-points { font-family: var(--font-display); font-size: 20px; min-width: 56px; text-align: right; }
+  .tag { font-size: 11px; font-weight: 900; text-transform: uppercase; border: 2px solid var(--ink); border-radius: 999px; padding: 0 8px; background: var(--mist); }
+  .tag.fast { background: var(--lime); }
+  .tag.premium { background: var(--rose); }
+
+  .gallery { display: flex; flex-direction: column; gap: 12px; }
+  .gallery-intro { margin: 0; font-weight: 800; }
+  .gallery-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+  .g-card { display: flex; flex-direction: column; gap: 8px; background: var(--paper); border: 3px solid var(--ink); border-radius: var(--radius-sm); box-shadow: var(--lift-sm); padding: 12px; animation: deal 0.4s both; }
+  .g-cost { font-size: 13px; font-weight: 800; color: var(--muted); }
+  .wrap { text-align: center; padding: 30px 0; }
+
+  @keyframes shake { 25% { translate: -5px 0; } 50% { translate: 5px 0; } 75% { translate: -3px 0; } }
+  @keyframes breathe { 50% { background: #c3e8ff; } }
+  @keyframes popin { from { scale: 0.6; opacity: 0; } }
+  @keyframes deal { from { translate: 0 24px; opacity: 0; } }
+  @keyframes stamp { from { scale: 2.4; opacity: 0; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pq.fits, .stuck, .trap.nope { animation: none; }
+  }
+
+  @media (width < 900px) {
+    .build, .play { grid-template-columns: minmax(0, 1fr); }
+    .side { position: static; order: -1; }
+    .watch { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "board" "note"; }
+    .lane { grid-template-columns: auto 80px 1fr auto; }
+    .palette { max-height: none; }
+  }
+</style>

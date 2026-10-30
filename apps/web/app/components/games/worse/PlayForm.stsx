@@ -1,0 +1,723 @@
+import { TRAPS, type MiwAnswer, type MiwQuestion, type MiwSurvey, type PlacedTrap, type TrapId } from "@brick/game";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { playSfx } from "../../../lib/audio";
+import { CAPTCHA_FAILS, MODAL_LINES, TERMS, formRandom } from "./note";
+
+/** How often a trap gives in to brute force, so every form can be finished without its trick, just slower. */
+const PATIENCE = { runaway: 14, modals: 6, tabmaze: 10, captcha: 5 } as const;
+/** How close the mouse may get to a runaway button before it bolts, in pixels. */
+const DODGE_RADIUS = 90;
+
+export interface FormSubmission {
+  answers: MiwAnswer[];
+  fell: TrapId[];
+  upsold: boolean;
+}
+
+/** What a question's control holds: an option, a rating, a typed number, a slider position, or a checkbox. */
+type Raw = number | string | boolean | null;
+
+const initialRaw = (survey: MiwSurvey, traps: readonly PlacedTrap[]): Raw[] =>
+  survey.questions.map((q, i) => {
+    if (q.kind === "consent") return traps.some((t) => t.trap === "doubleneg" && t.question === i);
+    if (q.kind === "number" && !traps.some((t) => t.trap === "slider" && t.question === i)) return "";
+    return null;
+  });
+
+/**
+ * A survey with its traps, to fill in against the clock. Traps run here; the server only gets the answers, the traps
+ * that caught you, and how far you've got (`onProgress`: steps passed, and the trap you're stuck on).
+ */
+export function PlayForm({
+  survey,
+  traps,
+  seed,
+  onProgress,
+  onSubmit,
+}: {
+  survey: MiwSurvey;
+  traps: readonly PlacedTrap[];
+  seed: string;
+  onProgress: (done: number, stuck: TrapId | null) => void;
+  onSubmit: (submission: FormSubmission) => void;
+}) {
+  const has = (id: TrapId) => traps.some((t) => t.trap === id);
+  const on = (i: number, id: TrapId) => traps.some((t) => t.trap === id && t.question === i);
+
+  const [raw, setRaw] = useState<Raw[]>(() => initialRaw(survey, traps));
+  const [touched, setTouched] = useState<boolean[]>(() => survey.questions.map(() => false));
+  const fell = useRef(new Set<TrapId>());
+  const [lastHit, setLastHit] = useState<TrapId | null>(null);
+  const [notice, setNotice] = useState<{ n: number; text: string } | null>(null);
+  const [sent, setSent] = useState(false);
+
+  const hit = (trap: TrapId) => {
+    fell.current.add(trap);
+    setLastHit(trap);
+  };
+  const say = (text: string) => setNotice({ n: Date.now(), text });
+
+  // Gate traps.
+  const [modals, setModals] = useState(has("modals") ? 1 : 0);
+  const modalCloses = useRef(0);
+  const [termsRead, setTermsRead] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [human, setHuman] = useState(false);
+  const [shame, setShame] = useState(false);
+
+  // The Tab maze: a scrambled tab order, and clicks that don't reach the fields until it gives up.
+  const [mazeBlocks, setMazeBlocks] = useState(0);
+  const maze = has("tabmaze") && mazeBlocks < PATIENCE.tabmaze;
+  const order = useMemo(() => {
+    const random = formRandom(seed);
+    const ids = survey.questions.map((_, i) => i);
+    for (let i = ids.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [ids[i], ids[j]] = [ids[j]!, ids[i]!];
+    }
+    // Never the reading order by chance.
+    if (ids.every((q, i) => q === i)) ids.reverse();
+    return ids;
+  }, [seed, survey.questions.length]);
+  const tabIndex = (i: number) => (maze ? order.indexOf(i) + 1 : undefined);
+  const blockClick = () => {
+    setMazeBlocks((n) => n + 1);
+    hit("tabmaze");
+    playSfx("bump");
+    say(mazeBlocks + 1 >= PATIENCE.tabmaze ? "Fine. Clicks work now." : "Our fields only answer to the keyboard.");
+  };
+
+  const answers: MiwAnswer[] = survey.questions.map((q, i) => {
+    const r = raw[i];
+    switch (q.kind) {
+      case "consent":
+        return on(i, "doubleneg") ? !r : !!r;
+      case "number": {
+        if (typeof r === "number") return r;
+        const n = typeof r === "string" && /^\d+$/.test(r.trim()) ? Number(r.trim()) : null;
+        return n;
+      }
+      default:
+        return typeof r === "number" ? r : null;
+    }
+  });
+  const answered = survey.questions.map((q, i) => (q.kind === "consent" ? touched[i]! : answers[i] !== null));
+  const missing = survey.questions.some((q, i) => q.kind !== "consent" && answers[i] === null);
+
+  const done =
+    (has("modals") && modals === 0 ? 1 : 0) +
+    answered.filter(Boolean).length +
+    (has("terms") && termsAccepted ? 1 : 0) +
+    (has("captcha") && human ? 1 : 0);
+  const stuck: TrapId | null = modals > 0 ? "modals" : lastHit;
+  const lastDone = useRef(done);
+  useEffect(() => {
+    if (done > lastDone.current) {
+      setLastHit(null);
+      setNotice(null);
+    }
+    lastDone.current = done;
+  }, [done]);
+  useEffect(() => {
+    if (!sent) onProgress(done, stuck);
+  }, [done, stuck]);
+
+  const set = (i: number, value: Raw) => {
+    setRaw((r) => r.map((v, j) => (j === i ? value : v)));
+    setTouched((t) => t.map((v, j) => j === i || v));
+  };
+
+  // Esc closes every popup at once: the modal loop's trick.
+  useEffect(() => {
+    if (modals === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      setModals(0);
+      playSfx("whoosh");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [modals > 0]);
+  const closeModal = () => {
+    hit("modals");
+    modalCloses.current += 1;
+    if (modalCloses.current >= PATIENCE.modals) {
+      setModals(0);
+      say("Fine. No more popups. For now.");
+      playSfx("whoosh");
+    } else {
+      setModals((n) => n + 1);
+      playSfx("pop");
+    }
+  };
+
+  const send = (upsold: boolean) => {
+    setShame(false);
+    setSent(true);
+    playSfx("point");
+    onSubmit({ answers, fell: [...fell.current], upsold });
+  };
+  const trySubmit = () => {
+    if (sent || modals > 0) return;
+    const block = missing
+      ? "Answer every question first."
+      : has("terms") && !termsAccepted
+        ? "Please accept the terms first."
+        : has("captcha") && !human
+          ? "Please prove you're human first."
+          : null;
+    if (block) {
+      say(block);
+      playSfx("error");
+      return;
+    }
+    if (has("confirmshame")) {
+      setShame(true);
+      playSfx("pop");
+      return;
+    }
+    send(false);
+  };
+  const reset = () => {
+    hit("disguised");
+    setRaw(initialRaw(survey, traps));
+    setTouched(survey.questions.map(() => false));
+    say("Form cleared. Thanks for starting over!");
+    playSfx("thud");
+  };
+
+  return (
+    <div className="pf">
+      <form
+        className={maze ? "sheet maze" : "sheet"}
+        onSubmit={(e) => {
+          e.preventDefault();
+          trySubmit();
+        }}
+        aria-label={survey.title}
+      >
+        <header className="sheet-head">
+          <h2 className="sheet-title">{survey.title}</h2>
+          <p className="sheet-intro">{survey.intro}</p>
+        </header>
+        {survey.questions.map((q, i) => (
+          <fieldset key={i} className={on(i, "ghost") ? "q ghost" : "q"}>
+            <legend className="q-text">
+              <span className="q-num">{i + 1}.</span> {q.text}
+            </legend>
+            <Control q={q} i={i} raw={raw[i] ?? null} set={set} reversed={on(i, "reversed")} slider={on(i, "slider")} tiny={on(i, "tiny")} doubleneg={on(i, "doubleneg")} tabIndex={tabIndex(i)} />
+            {maze ? <div className="maze-block" onClick={blockClick} aria-hidden="true" /> : null}
+          </fieldset>
+        ))}
+
+        {has("terms") ? (
+          <Terms
+            read={termsRead}
+            accepted={termsAccepted}
+            onRead={() => setTermsRead(true)}
+            onAccept={(yes) => {
+              if (yes && !termsRead) {
+                hit("terms");
+                say("Please read the terms in full before accepting.");
+                playSfx("bump");
+                return;
+              }
+              setTermsAccepted(yes);
+            }}
+          />
+        ) : null}
+        {has("captcha") ? (
+          <Captcha
+            seed={seed}
+            human={human}
+            onFail={(last) => {
+              hit("captcha");
+              playSfx("error");
+              if (last) {
+                setHuman(true);
+                say("Fine. You seem human enough.");
+              }
+            }}
+            onPass={() => {
+              setHuman(true);
+              playSfx("point");
+            }}
+          />
+        ) : null}
+
+        <Footer
+          runaway={has("runaway")}
+          disguised={has("disguised")}
+          tabIndex={maze ? survey.questions.length + 1 : undefined}
+          onSubmit={trySubmit}
+          onReset={reset}
+          onDodge={() => {
+            hit("runaway");
+            playSfx("whoosh");
+          }}
+        />
+        {notice ? (
+          <p className="notice" key={notice.n} role="alert">
+            {notice.text}
+          </p>
+        ) : null}
+      </form>
+
+      {modals > 0 ? <ModalStack count={modals} seed={seed} onClose={closeModal} /> : null}
+      {shame ? <Shame onYes={() => send(true)} onNo={() => send(false)} /> : null}
+    </div>
+  );
+}
+
+function Control({
+  q,
+  i,
+  raw,
+  set,
+  reversed,
+  slider,
+  tiny,
+  doubleneg,
+  tabIndex,
+}: {
+  q: MiwQuestion;
+  i: number;
+  raw: Raw;
+  set: (i: number, value: Raw) => void;
+  reversed: boolean;
+  slider: boolean;
+  tiny: boolean;
+  doubleneg: boolean;
+  tabIndex: number | undefined;
+}) {
+  const name = `miw-q${i}`;
+  switch (q.kind) {
+    case "choice":
+      return (
+        <div className={tiny ? "options tiny" : "options"} role="radiogroup">
+          {q.options.map((option, o) =>
+            tiny ? (
+              // The label is plain text: only the dot takes a click.
+              <span key={o} className="option">
+                <input type="radio" name={name} checked={raw === o} onChange={() => set(i, o)} tabIndex={tabIndex} aria-label={option} />
+                <span className="option-text">{option}</span>
+              </span>
+            ) : (
+              <label key={o} className={raw === o ? "option on" : "option"}>
+                <input type="radio" name={name} checked={raw === o} onChange={() => set(i, o)} tabIndex={tabIndex} />
+                <span className="option-text">{option}</span>
+              </label>
+            ),
+          )}
+        </div>
+      );
+    case "rating": {
+      const values = reversed ? [5, 4, 3, 2, 1] : [1, 2, 3, 4, 5];
+      return (
+        <div className="rating">
+          <span className="end">{reversed ? q.high : q.low}</span>
+          <div className="stars" role="radiogroup" aria-label={q.text}>
+            {values.map((n) => (
+              <button
+                key={n}
+                type="button"
+                role="radio"
+                aria-checked={raw === n}
+                className={raw === n ? "rate on" : "rate"}
+                tabIndex={tabIndex}
+                onClick={() => set(i, n)}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          <span className="end">{reversed ? q.low : q.high}</span>
+        </div>
+      );
+    }
+    case "number":
+      return slider ? (
+        <div className="slider">
+          <input
+            type="range"
+            min={q.min}
+            max={q.max}
+            step={1}
+            value={typeof raw === "number" ? raw : q.min}
+            onChange={(e) => set(i, Number(e.target.value))}
+            tabIndex={tabIndex}
+            aria-label={q.text}
+          />
+          <span className="slider-value">
+            {typeof raw === "number" ? raw : "?"} {q.unit}
+          </span>
+        </div>
+      ) : (
+        <label className="number">
+          <input
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            maxLength={4}
+            value={typeof raw === "string" ? raw : ""}
+            onChange={(e) => set(i, e.target.value.replace(/\D/g, ""))}
+            tabIndex={tabIndex}
+            aria-label={q.text}
+          />
+          <span className="unit">{q.unit}</span>
+        </label>
+      );
+    case "consent":
+      return (
+        <label className="consent">
+          <input type="checkbox" checked={!!raw} onChange={(e) => set(i, e.target.checked)} tabIndex={tabIndex} />
+          <span>{doubleneg ? `Untick this box if you would prefer not to stop receiving ${q.thing}.` : q.text}</span>
+        </label>
+      );
+  }
+}
+
+function Terms({ read, accepted, onRead, onAccept }: { read: boolean; accepted: boolean; onRead: () => void; onAccept: (yes: boolean) => void }) {
+  return (
+    <div className="gate terms">
+      <span className="gate-title">Terms and conditions</span>
+      <div
+        className="terms-box"
+        tabIndex={0}
+        role="region"
+        aria-label="Terms and conditions"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          if (el.scrollTop + el.clientHeight >= el.scrollHeight - 6) onRead();
+        }}
+      >
+        {TERMS.map((clause, i) => (
+          <p key={i}>{clause}</p>
+        ))}
+        <p className="terms-end">End of terms. You made it. Nobody makes it.</p>
+      </div>
+      <label className={read ? "accept" : "accept unread"}>
+        <input type="checkbox" checked={accepted} onChange={(e) => onAccept(e.target.checked)} />
+        <span>I have read and accept every word of the terms</span>
+      </label>
+    </div>
+  );
+}
+
+const CAPTCHA_SHAPES = [
+  "M10 30a20 20 0 1 0 40 0a20 20 0 1 0-40 0Z",
+  "M12 12h36v36H12Z",
+  "M30 8l24 42H6Z",
+  "M8 34c8-16 14 8 22-8s14 8 22-8v22H8Z",
+  "M30 6l7 15 16 2-12 11 3 16-14-8-14 8 3-16L7 23l16-2Z",
+  "M14 40a12 12 0 0 1 4-23 14 14 0 0 1 26 2 10 10 0 0 1 2 21Z",
+  "M30 50C14 38 8 30 8 22a10 10 0 0 1 22-4 10 10 0 0 1 22 4c0 8-6 16-22 28Z",
+  "M8 30h44M30 8v44",
+  "M12 44V16h12l12 28h12V16",
+];
+const CAPTCHA_FILLS = ["#3aaefc", "#ff5a4e", "#ffcc33", "#5fd068", "#8b6cff", "#00c4b8", "#ff7ab6", "#94a3b8", "#ff8a1f"];
+
+function Captcha({ seed, human, onFail, onPass }: { seed: string; human: boolean; onFail: (last: boolean) => void; onPass: () => void }) {
+  const [picked, setPicked] = useState<number[]>([]);
+  const [fails, setFails] = useState(0);
+  const [easy, setEasy] = useState(false);
+  const shapes = useMemo(() => {
+    const random = formRandom(`${seed}:captcha`);
+    return CAPTCHA_SHAPES.map((d, i) => ({ d, fill: CAPTCHA_FILLS[(i + Math.floor(random() * 9)) % 9]!, turn: Math.round(random() * 40 - 20) }));
+  }, [seed]);
+  if (human) {
+    return (
+      <div className="gate captcha passed">
+        <span className="gate-title">Human: confirmed</span>
+      </div>
+    );
+  }
+  return (
+    <div className="gate captcha">
+      <span className="gate-title">Prove you're human</span>
+      {easy ? (
+        <div className="easy">
+          <p>Accessible version: press the button.</p>
+          <button type="button" className="human-btn" onClick={onPass}>
+            I'm a human
+          </button>
+        </div>
+      ) : (
+        <>
+          <p className="captcha-ask">Select every square that has a feeling.</p>
+          <div className="captcha-grid">
+            {shapes.map((s, i) => (
+              <button
+                key={i}
+                type="button"
+                className={picked.includes(i) ? "cell on" : "cell"}
+                aria-pressed={picked.includes(i)}
+                aria-label={`Square ${i + 1}`}
+                onClick={() => setPicked((p) => (p.includes(i) ? p.filter((x) => x !== i) : [...p, i]))}
+              >
+                <svg viewBox="0 0 60 60" aria-hidden="true">
+                  <path d={s.d} fill={s.fill} stroke="#1b1f3b" strokeWidth="4" strokeLinejoin="round" transform={`rotate(${s.turn} 30 30)`} />
+                </svg>
+              </button>
+            ))}
+          </div>
+          {fails ? (
+            <p className="captcha-fail" key={fails} role="alert">
+              {CAPTCHA_FAILS[(fails - 1) % CAPTCHA_FAILS.length]}
+            </p>
+          ) : null}
+          <div className="captcha-foot">
+            <button
+              type="button"
+              className="verify"
+              onClick={() => {
+                const next = fails + 1;
+                setFails(next);
+                setPicked([]);
+                onFail(next >= PATIENCE.captcha);
+              }}
+            >
+              Verify
+            </button>
+            <button type="button" className="tiny-link" onClick={() => setEasy(true)}>
+              accessible version
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Footer({
+  runaway,
+  disguised,
+  tabIndex,
+  onSubmit,
+  onReset,
+  onDodge,
+}: {
+  runaway: boolean;
+  disguised: boolean;
+  tabIndex: number | undefined;
+  onSubmit: () => void;
+  onReset: () => void;
+  onDodge: () => void;
+}) {
+  const zone = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const [spot, setSpot] = useState({ x: 70, y: 50 });
+  const dodges = useRef(0);
+  const random = useMemo(() => formRandom(`${runaway}:${disguised}:dodge`), [runaway, disguised]);
+
+  const bolt = (px: number, py: number) => {
+    const box = zone.current?.getBoundingClientRect();
+    if (!box) return;
+    // Somewhere well away from the pointer, inside the zone.
+    let best = spot;
+    let far = -1;
+    for (let k = 0; k < 8; k++) {
+      const x = 12 + random() * 76;
+      const y = 18 + random() * 64;
+      const d = Math.hypot(box.left + (x / 100) * box.width - px, box.top + (y / 100) * box.height - py);
+      if (d > far) {
+        far = d;
+        best = { x, y };
+      }
+    }
+    dodges.current += 1;
+    setSpot(best);
+    onDodge();
+  };
+  const near = (e: ReactPointerEvent) => {
+    if (!runaway || e.pointerType === "touch" || dodges.current >= PATIENCE.runaway) return;
+    const b = button.current?.getBoundingClientRect();
+    if (!b) return;
+    if (Math.hypot(b.left + b.width / 2 - e.clientX, b.top + b.height / 2 - e.clientY) < DODGE_RADIUS) bolt(e.clientX, e.clientY);
+  };
+
+  const submitClass = disguised ? "submit grey" : "submit";
+  const submit = (
+    <button
+      ref={button}
+      type="button"
+      className={runaway ? `${submitClass} running` : submitClass}
+      style={runaway ? { left: `${spot.x}%`, top: `${spot.y}%` } : undefined}
+      tabIndex={tabIndex}
+      onPointerDown={(e) => {
+        // Fingers don't hover, so it dodges the tap itself, while it still has the energy.
+        if (runaway && e.pointerType === "touch" && dodges.current < PATIENCE.runaway) {
+          e.preventDefault();
+          bolt(e.clientX, e.clientY);
+        }
+      }}
+      onClick={onSubmit}
+    >
+      Submit
+    </button>
+  );
+  return (
+    <div ref={zone} className={runaway ? "foot dodge" : "foot"} onPointerMove={near}>
+      {disguised ? (
+        <button type="button" className="reset" onClick={onReset}>
+          Reset form
+        </button>
+      ) : null}
+      {submit}
+    </div>
+  );
+}
+
+function ModalStack({ count, seed, onClose }: { count: number; seed: string; onClose: () => void }) {
+  const offset = useMemo(() => Math.floor(formRandom(`${seed}:modals`)() * MODAL_LINES.length), [seed]);
+  const line = MODAL_LINES[(offset + count - 1) % MODAL_LINES.length]!;
+  const behind = Math.min(count - 1, 4);
+  return (
+    <div className="modals" role="dialog" aria-modal="true" aria-label={line.title}>
+      <div className="stage">
+      {Array.from({ length: behind }, (_, k) => (
+        <div key={k} className="modal ghost-card" style={{ translate: `${(behind - k) * 14}px ${(behind - k) * -12}px` }} aria-hidden="true" />
+      ))}
+      <div className="modal" key={count}>
+        <button type="button" className="modal-x" aria-label="Close" onClick={onClose} autoFocus>
+          ×
+        </button>
+        <strong className="modal-title">{line.title}</strong>
+        <p className="modal-body">{line.body}</p>
+        <button type="button" className="modal-ok" onClick={onClose}>
+          No thanks
+        </button>
+        {count > 1 ? <span className="modal-count">{count} popups and counting</span> : null}
+      </div>
+      </div>
+    </div>
+  );
+}
+
+function Shame({ onYes, onNo }: { onYes: () => void; onNo: () => void }) {
+  return (
+    <div className="modals" role="dialog" aria-modal="true" aria-label="Upgrade to Premium">
+      <div className="stage">
+      <div className="modal shame">
+        <strong className="modal-title">Wait! Go Premium?</strong>
+        <p className="modal-body">Unlock Premium Feedback: your answers, but in bold. Only 49 a month, forever.</p>
+        <button type="button" className="yes" onClick={onYes} autoFocus>
+          YES! Upgrade me!
+        </button>
+        <button type="button" className="tiny-link" onClick={onNo}>
+          No thanks, I enjoy wasting money
+        </button>
+      </div>
+      </div>
+    </div>
+  );
+}
+
+<style>
+  .pf { position: relative; }
+  .sheet {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift);
+    padding: 20px 22px;
+    font-family: var(--font-body);
+    color: #24292f;
+  }
+  .sheet-head { border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }
+  .sheet-title { margin: 0; font-size: 22px; font-weight: 900; }
+  .sheet-intro { margin: 4px 0 0; color: #57606a; font-weight: 600; }
+
+  .q { position: relative; border: 2px solid #e5e7eb; border-radius: 12px; padding: 10px 14px 12px; margin: 0; min-width: 0; }
+  .q-text { font-weight: 800; padding: 0 4px; }
+  .q-num { color: #8b949e; }
+  .q.ghost, .q.ghost .end, .q.ghost .option-text, .q.ghost .unit, .q.ghost .slider-value, .q.ghost .q-num { color: #f3f4f6; }
+  .q.ghost .rate { color: #f3f4f6; border-color: #f3f4f6; background: #fff; }
+  .q.ghost .option, .q.ghost .number input { border-color: #f3f4f6; }
+  .q ::selection, .sheet ::selection { background: var(--ink); color: var(--sun); }
+
+  .maze-block { position: absolute; inset: 0; z-index: 2; cursor: not-allowed; }
+
+  .options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .option { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 2px solid #d0d7de; border-radius: 10px; cursor: pointer; font-weight: 700; }
+  .option.on { border-color: var(--sky); background: #ddf4ff; }
+  .option input { width: 18px; height: 18px; margin: 0; accent-color: var(--sky); }
+  .options.tiny .option { border: 0; padding: 4px 6px; cursor: default; gap: 4px; }
+  .options.tiny .option input { width: 5px; height: 5px; cursor: pointer; }
+
+  .rating { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+  .end { font-size: 13px; font-weight: 800; color: #57606a; }
+  .stars { display: flex; gap: 6px; }
+  .rate { width: 40px; height: 40px; border: 2px solid #d0d7de; border-radius: 10px; background: #fff; font: inherit; font-weight: 900; font-size: 17px; cursor: pointer; color: #24292f; }
+  .rate.on { background: var(--sky); border-color: var(--sky); color: #fff; }
+
+  .number { display: inline-flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .number input { width: 90px; font: inherit; font-weight: 800; font-size: 18px; padding: 6px 10px; border: 2px solid #d0d7de; border-radius: 10px; }
+  .unit { font-weight: 700; color: #57606a; }
+  .slider { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+  .slider input { width: 120px; accent-color: var(--grape); }
+  .slider-value { font-weight: 800; font-size: 13px; color: #57606a; }
+
+  .consent { display: flex; align-items: flex-start; gap: 10px; margin-top: 6px; font-weight: 700; cursor: pointer; }
+  .consent input { width: 20px; height: 20px; margin: 2px 0 0; flex-shrink: 0; accent-color: var(--sky); }
+
+  .gate { display: flex; flex-direction: column; gap: 8px; border: 2px dashed #d0d7de; border-radius: 12px; padding: 10px 14px; }
+  .gate-title { font-weight: 900; font-size: 15px; }
+  .terms-box { height: 96px; overflow-y: auto; border: 2px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 11px; line-height: 1.5; color: #57606a; background: #f6f8fa; }
+  .terms-box:focus-visible { outline: 3px solid var(--sky); }
+  .terms-box p { margin: 0 0 6px; }
+  .terms-end { font-weight: 900; color: #24292f; }
+  .accept { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; cursor: pointer; }
+  .accept input { width: 18px; height: 18px; margin: 0; }
+  .accept.unread { opacity: 0.6; }
+
+  .captcha-ask { margin: 0; font-weight: 700; }
+  .captcha-grid { display: grid; grid-template-columns: repeat(3, 56px); gap: 4px; }
+  .cell { width: 56px; height: 56px; padding: 6px; border: 2px solid #d0d7de; border-radius: 6px; background: #fff; cursor: pointer; }
+  .cell.on { border-color: var(--sky); background: #ddf4ff; outline: 3px solid var(--sky); }
+  .cell svg { width: 100%; height: 100%; display: block; }
+  .captcha-fail { margin: 0; font-weight: 800; color: #cf222e; animation: wobble 0.4s; }
+  .captcha-foot { display: flex; align-items: flex-end; gap: 14px; }
+  .verify, .human-btn { font: inherit; font-weight: 900; padding: 6px 16px; border-radius: 8px; border: 2px solid #1f6feb; background: #1f6feb; color: #fff; cursor: pointer; }
+  .captcha.passed { border-style: solid; border-color: #2da44e; color: #1a7f37; }
+  .easy p { margin: 0 0 6px; font-weight: 700; }
+  .tiny-link { font: inherit; font-size: 10px; padding: 0; background: none; border: 0; color: #57606a; text-decoration: underline; cursor: pointer; }
+
+  .foot { display: flex; justify-content: flex-end; align-items: center; gap: 12px; padding-top: 6px; }
+  .foot.dodge { position: relative; height: 150px; border: 2px dotted #e5e7eb; border-radius: 12px; }
+  .submit { font: inherit; font-weight: 900; font-size: 17px; padding: 10px 26px; border: 3px solid var(--ink); border-radius: 12px; background: var(--sun); color: var(--ink); box-shadow: 0 4px 0 var(--ink); cursor: pointer; }
+  .submit:focus-visible, .reset:focus-visible, .rate:focus-visible, .modal-x:focus-visible, .modal-ok:focus-visible, .yes:focus-visible, .tiny-link:focus-visible, .verify:focus-visible, .human-btn:focus-visible { outline: 4px solid var(--grape); outline-offset: 3px; }
+  .submit.grey { background: #eaeef2; color: #8c959f; border-color: #d0d7de; box-shadow: none; font-weight: 700; font-size: 14px; padding: 8px 16px; }
+  .submit.running { position: absolute; translate: -50% -50%; transition: left 0.18s ease-out, top 0.18s ease-out; }
+  .reset { font: inherit; font-weight: 900; font-size: 22px; padding: 14px 34px; border: 3px solid var(--ink); border-radius: 14px; background: var(--lime); color: var(--ink); box-shadow: 0 5px 0 var(--ink); cursor: pointer; margin-right: auto; }
+  .foot.dodge .reset { position: absolute; left: 16px; top: 50%; translate: 0 -50%; }
+
+  .notice { margin: 0; align-self: center; font-weight: 900; color: var(--paper); background: var(--ink); border-radius: 999px; padding: 4px 14px; animation: wobble 0.4s; }
+
+  .modals { position: absolute; inset: 0; z-index: 5; background: rgba(27, 31, 59, 0.35); border-radius: var(--radius); }
+  /* Sticks to the screen while the form scrolls under it, so a popup is always in view. */
+  .stage { position: sticky; top: 0; height: min(100%, 100vh); display: flex; align-items: center; justify-content: center; }
+  .modal { position: absolute; width: min(340px, 88%); display: flex; flex-direction: column; gap: 8px; background: var(--paper); border: var(--line) solid var(--ink); border-radius: var(--radius); box-shadow: var(--lift); padding: 18px 20px 16px; animation: popin 0.25s cubic-bezier(0.2, 1.6, 0.4, 1); }
+  .modal:not(.ghost-card) { z-index: 1; }
+  .ghost-card { height: 150px; animation: none; }
+  .modal-x { position: absolute; top: 6px; right: 8px; width: 30px; height: 30px; font-size: 22px; line-height: 1; border: 0; background: none; cursor: pointer; color: #57606a; }
+  .modal-title { font-family: var(--font-display); font-size: 22px; padding-right: 26px; }
+  .modal-body { margin: 0; font-weight: 700; }
+  .modal-ok { align-self: flex-start; font: inherit; font-weight: 800; padding: 6px 14px; border-radius: 10px; border: 2px solid var(--ink); background: var(--sun-soft); cursor: pointer; }
+  .modal-count { font-size: 12px; font-weight: 800; color: var(--coral-ink); }
+  .shame { align-items: center; text-align: center; }
+  .yes { font-family: var(--font-display); font-size: 28px; padding: 14px 30px; border: var(--line) solid var(--ink); border-radius: var(--radius); background: var(--lime); box-shadow: var(--lift-sm); cursor: pointer; }
+
+  @keyframes wobble { 25% { translate: -6px 0; } 50% { translate: 6px 0; } 75% { translate: -3px 0; } }
+  @keyframes popin { from { scale: 0.6; opacity: 0; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .submit.running { transition: none; }
+    .notice, .captcha-fail, .modal { animation: none; }
+  }
+</style>

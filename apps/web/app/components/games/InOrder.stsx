@@ -1,0 +1,608 @@
+import { IN_ORDER_POINTS, type InOrderCard, type InOrderPlay, type InOrderView, type PlayerId } from "@brick/game";
+import { useEffect, useRef, useState } from "react";
+import { playSfx } from "../../lib/audio";
+import { useCountdown } from "../../lib/clock";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+/** How many cards under the top one the pile shows. */
+const PILE_DEPTH = 4;
+const OUCH_MS = 1800;
+/** A tap the server never answered (a dropped message) can be tried again after this long. */
+const RETRY_MS = 1500;
+
+/** Low numbers lean teal, high ones coral, so a card's color hints at how long to wait. */
+const hue = (card: number) => Math.round(172 - card * 1.62);
+
+function banner(view: InOrderView, me: PlayerId | null): string {
+  const mine = view.hand?.length ?? 0;
+  switch (view.phase) {
+    case "ready":
+      return `Level ${view.round + 1}: ${view.cardsEach} card${view.cardsEach === 1 ? "" : "s"} each`;
+    case "play":
+      if (me === null || view.hand === null) return "Watching the team...";
+      return mine ? "Play when it feels right" : "All cards down. Hold your breath!";
+    case "levelEnd":
+      return view.outcome === "cleared" ? "Level cleared!" : "Time's up!";
+    case "results":
+      return view.lives > 0 ? "You made it, together!" : "Out of lives!";
+    case "done":
+      return "That's a wrap";
+  }
+}
+
+export function InOrder({ view, me, players, matchScore, act }: GameProps<InOrderView>) {
+  useMusic(view.phase === "levelEnd" || view.phase === "results" || view.phase === "done" ? "reveal" : "think");
+  const name = (id: PlayerId) => (id === me ? "You" : (seatOf(players, id)?.name ?? "?"));
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+  const canPlay = view.phase === "play" && !!view.hand?.length;
+
+  // A life lost: the screen shakes and says why, for a moment.
+  const [ouch, setOuch] = useState<{ n: number; why: string } | null>(null);
+  const [shake, setShake] = useState(0);
+  const lives = useRef(view.lives);
+  useEffect(() => {
+    const lost = view.lives < lives.current;
+    lives.current = view.lives;
+    if (!lost) return;
+    const last = view.plays.at(-1);
+    const why =
+      view.outcome === "timeout"
+        ? "The clock ran out"
+        : last?.burned.length
+          ? `${name(last.playerId)} jumped ahead of ${last.burned.map((b) => `${b.card}`).join(", ")}`
+          : "Ouch";
+    setShake((n) => n + 1);
+    setOuch({ n: Date.now(), why });
+    playSfx("error");
+    const crumble = setTimeout(() => playSfx("crumble"), 250);
+    const clear = setTimeout(() => setOuch(null), OUCH_MS);
+    return () => {
+      clearTimeout(crumble);
+      clearTimeout(clear);
+    };
+  }, [view.lives]);
+
+  // Everyone else's plays land with a thud; yours already popped when you tapped.
+  const playKey = useRef(`${view.round}:${view.turn}`);
+  useEffect(() => {
+    const key = `${view.round}:${view.turn}`;
+    if (key === playKey.current) return;
+    playKey.current = key;
+    const last = view.plays.at(-1);
+    if (last && last.playerId !== me && !last.burned.length) playSfx("thud");
+  }, [view.round, view.turn]);
+
+  // Phase changes: the countdown, the go, and how the level ended.
+  const phase = useRef(view.phase);
+  useEffect(() => {
+    if (phase.current === view.phase) return;
+    phase.current = view.phase;
+    if (view.phase === "ready") playSfx("whoosh");
+    if (view.phase === "play") playSfx("start");
+    if (view.phase === "levelEnd") playSfx(view.outcome === "cleared" ? "win" : "timeUp");
+    if (view.phase === "results") playSfx(view.lives > 0 ? "win" : "lose");
+  }, [view.phase]);
+
+  // Confetti for every level cleared.
+  const cleared = view.outcome === "cleared" ? `${view.round}` : null;
+  useEffect(() => {
+    if (!cleared || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let cancelled = false;
+    import("canvas-confetti").then(({ default: confetti }) => {
+      if (cancelled) return;
+      const colors = ["#00c4b8", "#ff5a4e", "#ffcc33", "#8b6cff", "#5fd068", "#ff7ab6"];
+      confetti({ particleCount: 90 + view.round * 40, spread: 80, origin: { y: 0.45 }, colors });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cleared]);
+
+  // One tap, one card: a double tap or a stale screen never plays the next card by accident.
+  const sent = useRef<{ key: string; at: number } | null>(null);
+  const play = () => {
+    const card = view.hand?.[0];
+    if (!canPlay || card === undefined) return;
+    const key = `${view.round}:${card}`;
+    if (sent.current?.key === key && Date.now() - sent.current.at < RETRY_MS) return;
+    sent.current = { key, at: Date.now() };
+    playSfx("pop");
+    act({ type: "play", card });
+  };
+
+  return (
+    <div className={shake % 2 ? "io shake-a" : shake ? "io shake-b" : "io"}>
+      <GameHud
+        gameId="in-order"
+        round={`Level ${view.round + 1} of ${view.totalRounds}`}
+        banner={banner(view, me)}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={view.phase === "play"}
+        score={matchScore + myPoints}
+      />
+
+      <div className="status">
+        <Lives lives={view.lives} max={view.maxLives} />
+        <ol className="levels" aria-label="Levels">
+          {Array.from({ length: view.totalRounds }, (_, i) => (
+            <li key={i} className={i < view.levelsCleared ? "lvl won" : i === view.round ? "lvl now" : "lvl"}>
+              {i < view.levelsCleared ? <Icon name="star" /> : i + 1}
+            </li>
+          ))}
+        </ol>
+      </div>
+
+      <div className="table">
+        <Pile view={view} players={players} name={name} />
+        <div className="mine">
+          {view.phase === "levelEnd" || view.phase === "results" || view.phase === "done" ? (
+            <LevelEnd view={view} name={name} />
+          ) : (
+            <Hand view={view} canPlay={canPlay} watching={me === null || view.hand === null} onPlay={play} />
+          )}
+        </div>
+        <Holders view={view} players={players} me={me} />
+      </div>
+
+      {view.phase === "ready" ? <Countdown view={view} /> : null}
+      {ouch ? (
+        <div className="ouch" key={ouch.n} role="status">
+          <span className="ouch-heart">
+            <Icon name="heartBroken" />
+          </span>
+          <span className="ouch-title">Life lost!</span>
+          <span className="ouch-why">{ouch.why}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Lives({ lives, max }: { lives: number; max: number }) {
+  return (
+    <div className="lives" aria-label={`${lives} of ${max} lives left`}>
+      {Array.from({ length: max }, (_, i) => (
+        <span key={i} className={i < lives ? "heart" : "heart broken"}>
+          <Icon name={i < lives ? "heart" : "heartEmpty"} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function Card({ card, size = "md", className }: { card: number; size?: "sm" | "md" | "lg"; className?: string }) {
+  return (
+    <span className={["card", size, className ?? ""].join(" ")} style={{ "--hue": hue(card) }}>
+      <span className="corner tl" aria-hidden="true">
+        {card}
+      </span>
+      <span className="value">{card}</span>
+      <span className="corner br" aria-hidden="true">
+        {card}
+      </span>
+    </span>
+  );
+}
+
+/** The shared pile: the last card played on top, who played it, and what it threw away if it came too early. */
+function Pile({ view, players, name }: { view: InOrderView; players: Seat[]; name: (id: PlayerId) => string }) {
+  const top = view.plays.at(-1);
+  const under = view.plays.slice(-PILE_DEPTH - 1, -1);
+  const seat = top ? seatOf(players, top.playerId) : undefined;
+  return (
+    <section className="pile-area" aria-label="The pile">
+      <div className="pile">
+        {top ? null : (
+          <span className="slot">
+            <span className="slot-text">Lowest card first</span>
+          </span>
+        )}
+        {under.map((p, i) => (
+          <span key={`${view.round}-${view.plays.length - under.length - 1 + i}`} className="under" style={{ rotate: `${((p.card * 7) % 13) - 6}deg`, translate: `${(under.length - i) * -4}px ${(under.length - i) * 3}px` }}>
+            <Card card={p.card} size="lg" />
+          </span>
+        ))}
+        {top ? (
+          <span key={`${view.round}-${view.turn}`} className={top.burned.length ? "top slam bad" : "top slam"}>
+            <Card card={top.card} size="lg" />
+            {top.burned.length ? <span className="stamp">Too early!</span> : null}
+          </span>
+        ) : null}
+      </div>
+      <div className="by" aria-live="polite">
+        {top && seat ? (
+          <>
+            <Brick avatar={seat.avatar} size="xs" mood={top.burned.length ? "sad" : "happy"} />
+            <span>
+              <b>{name(top.playerId)}</b> played {top.card}
+            </span>
+          </>
+        ) : (
+          <span className="muted">{view.phase === "ready" ? "Get ready..." : "Nobody has played yet"}</span>
+        )}
+      </div>
+      {top?.burned.length ? <Burned cards={top.burned} name={name} /> : null}
+      {view.plays.length > 1 ? <Trail plays={view.plays} /> : null}
+    </section>
+  );
+}
+
+function Burned({ cards, name }: { cards: InOrderCard[]; name: (id: PlayerId) => string }) {
+  return (
+    <div className="burned">
+      <span className="burned-label">Thrown away:</span>
+      {cards.map((c, i) => (
+        <span key={`${c.playerId}-${c.card}`} className="burned-card" style={{ animationDelay: `${0.25 + i * 0.12}s` }}>
+          <Card card={c.card} size="sm" />
+          <span className="burned-name">{name(c.playerId)}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Every card played this level, in order, small. */
+function Trail({ plays }: { plays: InOrderPlay[] }) {
+  return (
+    <ol className="trail" aria-label="Cards played this level">
+      {plays.map((p, i) => (
+        <li key={i} className={p.burned.length ? "step bad" : "step"} style={{ "--hue": hue(p.card) }}>
+          {p.card}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** Who still holds cards, and how many: never which. */
+function Holders({ view, players, me }: { view: InOrderView; players: Seat[]; me: PlayerId | null }) {
+  return (
+    <ul className="holders" aria-label="Cards still held">
+      {players.map((p) => {
+        const n = view.holding[p.id] ?? 0;
+        return (
+          <li key={p.id} className={["holder", p.id === me ? "me" : "", n ? "" : "empty"].join(" ")}>
+            <Brick avatar={p.avatar} size="xs" mood={n ? "happy" : "sleepy"} />
+            <span className="holder-name">{p.id === me ? "You" : p.name}</span>
+            <span className="backs" aria-label={`${n} card${n === 1 ? "" : "s"}`}>
+              {n ? Array.from({ length: n }, (_, i) => <span key={i} className="back" />) : <span className="done">✓</span>}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function Hand({ view, canPlay, watching, onPlay }: { view: InOrderView; canPlay: boolean; watching: boolean; onPlay: () => void }) {
+  if (watching) return <p className="hint">You're watching this one. Everyone's cards stay secret, even from you.</p>;
+  const hand = view.hand ?? [];
+  if (!hand.length) {
+    return <p className="hint">{view.phase === "play" ? "Your hand is empty. Cheer the others on, silently." : ""}</p>;
+  }
+  const lowest = hand[0]!;
+  return (
+    <section className="hand-area" aria-label="Your cards">
+      <div className="hand">
+        <button type="button" className={canPlay ? "play live" : "play"} disabled={!canPlay} onClick={onPlay} aria-label={`Play your ${lowest}`}>
+          <Card card={lowest} size="lg" />
+          <span className="play-label">{view.phase === "ready" ? "Wait for it..." : "Tap to play"}</span>
+        </button>
+        {hand.slice(1).map((card, i) => (
+          <span key={card} className="later" style={{ rotate: `${(i + 1) * 4}deg` }}>
+            <Card card={card} size="md" />
+          </span>
+        ))}
+      </div>
+      <p className="hint">
+        {view.phase === "ready"
+          ? "Look at your cards and settle in. Don't say them!"
+          : "No turns: play when it feels like nobody holds anything lower. Your lowest card always goes first."}
+      </p>
+    </section>
+  );
+}
+
+function Countdown({ view }: { view: InOrderView }) {
+  const { seconds } = useCountdown(view.endsAt);
+  const last = useRef(seconds);
+  useEffect(() => {
+    if (seconds !== last.current && seconds > 0 && seconds <= 3) playSfx("tick");
+    last.current = seconds;
+  }, [seconds]);
+  return (
+    <div className="countdown" aria-live="polite">
+      <span className="cd-level">Level {view.round + 1}</span>
+      <span className="cd-num" key={seconds}>
+        {seconds > 3 ? "Focus..." : seconds || "Go!"}
+      </span>
+      <span className="cd-sub">
+        {view.cardsEach} card{view.cardsEach === 1 ? "" : "s"} each · no turns · no numbers out loud
+      </span>
+    </div>
+  );
+}
+
+function LevelEnd({ view, name }: { view: InOrderView; name: (id: PlayerId) => string }) {
+  const final = view.phase !== "levelEnd";
+  const won = view.outcome === "cleared";
+  const bonus = final && view.lives > 0 ? view.lives * IN_ORDER_POINTS.lifeLeft : 0;
+  return (
+    <Panel className={won ? "end won" : "end"} tone={won ? "lime" : "paper"}>
+      <p className="end-title">
+        {won ? `Level ${view.round + 1} cleared!` : view.outcome === "timeout" ? "Out of time" : "Out of lives"}
+      </p>
+      <p className="end-sub">
+        {won ? `+${view.levelPoints} for everyone.` : view.outcome === "timeout" ? "The clock cost a life. No points for this level." : "The team ran out of lives."}
+        {bonus ? ` And +${bonus} each for the ${view.lives} li${view.lives === 1 ? "fe" : "ves"} left.` : ""}
+      </p>
+      {view.leftover.length ? (
+        <div className="leftover">
+          <span className="burned-label">Never played:</span>
+          {view.leftover.map((c) => (
+            <span key={`${c.playerId}-${c.card}`} className="burned-card">
+              <Card card={c.card} size="sm" />
+              <span className="burned-name">{name(c.playerId)}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {final ? (
+        <p className="end-sub">
+          Levels cleared: <b>{view.levelsCleared}</b> of {view.totalRounds}
+        </p>
+      ) : (
+        <p className="end-sub muted">Next: {view.cardsEach + 1} cards each.</p>
+      )}
+    </Panel>
+  );
+}
+
+<style>
+  .io { position: relative; display: flex; flex-direction: column; gap: 14px; }
+  .shake-a { animation: shake-a 0.6s; }
+  .shake-b { animation: shake-b 0.6s; }
+
+  .status { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .lives { display: flex; gap: 6px; font-size: 30px; line-height: 1; }
+  .heart { display: inline-block; transition: scale 0.3s; }
+  .heart.broken { animation: break 0.7s ease-out; opacity: 0.55; }
+  .levels { list-style: none; margin: 0; padding: 0; display: flex; gap: 8px; }
+  .lvl {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 900;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 10px;
+    opacity: 0.6;
+  }
+  .lvl.now { background: var(--sun); opacity: 1; scale: 1.1; }
+  .lvl.won { background: var(--lime); opacity: 1; color: var(--paper); text-shadow: 0 2px 0 var(--ink); }
+
+  .table {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(220px, 1fr);
+    grid-template-areas: "pile holders" "mine holders";
+    gap: 16px 20px;
+    align-items: start;
+  }
+  .pile-area { grid-area: pile; }
+  .mine { grid-area: mine; }
+  .holders { grid-area: holders; }
+
+  .card {
+    --w: 96px;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--w);
+    aspect-ratio: 5 / 7;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: calc(var(--w) / 7);
+    box-shadow: var(--lift-sm), inset 0 calc(var(--w) / -9) 0 hsl(var(--hue) 85% 62%);
+    font-family: var(--font-display);
+    color: var(--ink);
+    user-select: none;
+  }
+  .card.sm { --w: 44px; border-width: 3px; box-shadow: 0 3px 0 var(--ink), inset 0 -5px 0 hsl(var(--hue) 85% 62%); }
+  .card.lg { --w: 148px; }
+  .value { font-size: calc(var(--w) * 0.46); line-height: 1; text-shadow: 0 3px 0 hsl(var(--hue) 85% 62%); }
+  .card.sm .value { font-size: 20px; text-shadow: none; }
+  .corner { position: absolute; font-size: calc(var(--w) * 0.14); line-height: 1; color: hsl(var(--hue) 70% 35%); }
+  .card.sm .corner { display: none; }
+  .tl { top: 7%; left: 9%; }
+  .br { bottom: 13%; right: 9%; rotate: 180deg; }
+
+  .pile-area { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .pile { position: relative; width: 190px; height: 240px; display: flex; align-items: center; justify-content: center; }
+  .slot {
+    width: 148px;
+    aspect-ratio: 5 / 7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    border: 4px dashed rgba(27, 31, 59, 0.35);
+    border-radius: 21px;
+    background: rgba(255, 255, 255, 0.35);
+    padding: 12px;
+  }
+  .slot-text { font-family: var(--font-display); font-size: 20px; color: rgba(27, 31, 59, 0.55); }
+  .under, .top { position: absolute; }
+  .under { filter: brightness(0.94); }
+  .slam { animation: slam 0.45s cubic-bezier(0.2, 1.4, 0.4, 1); }
+  .top.bad .card { background: #ffe1dc; }
+  .bad.slam { animation: slam 0.45s cubic-bezier(0.2, 1.4, 0.4, 1), jolt 0.5s 0.4s; }
+  .stamp {
+    position: absolute;
+    top: 38%;
+    left: 50%;
+    translate: -50% 0;
+    rotate: -14deg;
+    white-space: nowrap;
+    font-family: var(--font-display);
+    font-size: 24px;
+    color: var(--paper);
+    background: var(--coral);
+    border: 3px solid var(--ink);
+    border-radius: 10px;
+    padding: 2px 10px;
+    animation: stamp 0.35s 0.3s cubic-bezier(0.2, 1.8, 0.4, 1) both;
+  }
+  .by { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 17px; min-height: 36px; }
+  .muted { color: var(--muted); font-weight: 800; }
+
+  .burned, .leftover { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
+  .burned-label { font-weight: 900; color: var(--coral-ink); }
+  .burned-card { display: flex; flex-direction: column; align-items: center; gap: 2px; animation: toss 0.6s ease-out both; }
+  .burned .card { filter: grayscale(0.4); }
+  .burned-name { font-weight: 900; font-size: 12px; }
+
+  .trail { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+  .step {
+    min-width: 30px;
+    text-align: center;
+    font-weight: 900;
+    font-size: 13px;
+    background: hsl(var(--hue) 85% 88%);
+    border: 2px solid var(--ink);
+    border-radius: 8px;
+    padding: 1px 4px;
+  }
+  .step.bad { background: var(--coral); color: var(--paper); }
+
+  .holders { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .holder {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 900;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 14px;
+    padding: 3px 10px 3px 4px;
+    transition: opacity 0.3s;
+  }
+  .holder.me { background: var(--sun-soft); }
+  .holder.empty { opacity: 0.6; }
+  .holder-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .backs { display: flex; gap: 3px; }
+  .back {
+    width: 16px;
+    height: 22px;
+    border: 2px solid var(--ink);
+    border-radius: 4px;
+    background: repeating-linear-gradient(45deg, var(--grape) 0 4px, #a48cff 4px 8px);
+    animation: deal 0.3s ease-out both;
+  }
+  .done { color: var(--teal-ink); }
+
+  .hand-area { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .hand { display: flex; align-items: flex-end; justify-content: center; gap: 14px; flex-wrap: wrap; }
+  .play {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    font: inherit;
+    background: none;
+    border: 0;
+    padding: 6px;
+    cursor: pointer;
+    animation: deal 0.4s cubic-bezier(0.2, 1.6, 0.4, 1) both;
+  }
+  .play:disabled { cursor: default; }
+  .play:disabled .card { opacity: 0.85; }
+  .play.live .card { outline: 5px solid var(--sun); outline-offset: 4px; animation: breathe 2.4s ease-in-out infinite; }
+  .play.live:hover .card { translate: 0 -8px; }
+  .play.live:active .card { translate: 0 4px; box-shadow: 0 1px 0 var(--ink); }
+  .play-label { font-family: var(--font-display); font-size: 20px; color: var(--ink); }
+  .later { opacity: 0.75; transform-origin: bottom left; animation: deal 0.4s 0.1s ease-out both; }
+  .hint { font-weight: 800; text-align: center; color: var(--muted); }
+
+  .countdown {
+    position: absolute;
+    inset: 70px 0 auto;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    pointer-events: none;
+    text-align: center;
+  }
+  .cd-level { font-family: var(--font-display); font-size: 26px; color: var(--paper); -webkit-text-stroke: 1px var(--ink); text-shadow: 0 3px 0 var(--ink); }
+  .cd-num {
+    font-family: var(--font-display);
+    font-size: 84px;
+    line-height: 1;
+    color: var(--sun);
+    -webkit-text-stroke: 2px var(--ink);
+    text-shadow: 0 6px 0 var(--ink);
+    animation: count 0.9s ease-out;
+  }
+  .cd-sub { font-weight: 900; color: var(--paper); background: var(--ink); border-radius: 999px; padding: 2px 12px; }
+
+  .ouch {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    pointer-events: none;
+    background: radial-gradient(circle, rgba(255, 90, 78, 0.45), rgba(255, 90, 78, 0) 70%);
+    animation: ouch 1.8s ease-out both;
+  }
+  .ouch-heart { font-size: 96px; animation: pound 0.5s cubic-bezier(0.2, 1.8, 0.4, 1); }
+  .ouch-title { font-family: var(--font-display); font-size: 52px; color: var(--paper); -webkit-text-stroke: 2px var(--ink); text-shadow: 0 5px 0 var(--ink); }
+  .ouch-why { font-weight: 900; font-size: 18px; color: var(--paper); background: var(--ink); border-radius: 999px; padding: 4px 14px; }
+
+  .end { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; animation: deal 0.45s cubic-bezier(0.2, 1.6, 0.4, 1); }
+  .end-title { font-family: var(--font-display); font-size: 38px; line-height: 1.05; }
+  .end.won .end-title { animation: cheer 0.9s ease-in-out 2; }
+  .end-sub { font-weight: 800; font-size: 17px; }
+
+  @keyframes slam {
+    from { translate: 0 160px; rotate: -18deg; scale: 1.25; opacity: 0; }
+    70% { scale: 0.96; }
+  }
+  @keyframes jolt { 25% { translate: -10px 0; } 50% { translate: 10px 0; } 75% { translate: -6px 0; } }
+  @keyframes stamp { from { scale: 2.6; opacity: 0; } }
+  @keyframes toss { from { translate: 0 -60px; rotate: 30deg; opacity: 0; } }
+  @keyframes deal { from { translate: 0 30px; opacity: 0; } }
+  @keyframes breathe { 50% { outline-offset: 9px; } }
+  @keyframes count { from { scale: 1.8; opacity: 0; } 30% { scale: 1; opacity: 1; } }
+  @keyframes ouch { 0% { opacity: 0; } 10% { opacity: 1; } 75% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes pound { from { scale: 0.2; } }
+  @keyframes break { 0% { scale: 1.6; rotate: 0deg; } 40% { rotate: -20deg; } 100% { scale: 1; } }
+  @keyframes cheer { 50% { scale: 1.08; rotate: -2deg; } }
+  @keyframes shake-a { 10%, 50%, 90% { translate: -12px 4px; } 30%, 70% { translate: 12px -4px; } }
+  @keyframes shake-b { 10%, 50%, 90% { translate: 12px -4px; } 30%, 70% { translate: -12px 4px; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .shake-a, .shake-b, .play.live .card { animation: none; }
+  }
+
+  @media (width < 900px) {
+    .table { grid-template-columns: minmax(0, 1fr); grid-template-areas: "pile" "mine" "holders"; }
+    .holders { flex-direction: row; flex-wrap: wrap; justify-content: center; }
+    .holder { padding-right: 8px; }
+    .pile { height: 210px; }
+    .card.lg { --w: 128px; }
+    .slot { width: 128px; }
+  }
+</style>
