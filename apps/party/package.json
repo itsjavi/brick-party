@@ -1,0 +1,23 @@
+{
+  "name": "@brick/party",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "pnpm --filter @brick/db generate && tsc -p ."
+  },
+  "dependencies": {
+    "@brick/content": "workspace:*",
+    "@brick/db": "workspace:*",
+    "@brick/game": "workspace:*",
+    "jose": "^6.2.13",
+    "partyserver": "^0.5.10",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261029.1"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
