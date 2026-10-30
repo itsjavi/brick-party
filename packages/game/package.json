@@ -1,0 +1,13 @@
+{
+  "name": "@brick/game",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  }
+}
