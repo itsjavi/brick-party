@@ -1,0 +1,345 @@
+import {
+  DOODLE_LIMITS,
+  DUMMY_SHAPES,
+  createRng,
+  drawShapes,
+  randomFighterShapes,
+  randomSeed,
+  randomSmashFighter,
+  shapesToFighter,
+  smashSpec,
+  type Stroke,
+  type WeaponKind,
+} from "@brick/game";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Link, useSearchParams } from "react-router";
+import { DrawFighter } from "../games/doodle/DrawFighter.stsx";
+import { Drawing } from "../games/skip-logic/Drawing.stsx";
+import { DrawingCanvas } from "../games/skip-logic/DrawingCanvas.stsx";
+import { DRAWING_LIMITS, packStrokes, type LocalStroke } from "../games/skip-logic/simplify";
+import { Button } from "../ui/Button.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Title } from "../ui/Title.stsx";
+import { Choice, StatusLine, copyText, type Status } from "./DevBits.stsx";
+import { SmashSheet } from "./FighterSheets.stsx";
+import { DEV_STORAGE, drawingJson, parseDrawing, save, savedFighter, savedSketch, toLocal } from "./strokes";
+
+type Tab = "sketch" | "fighter";
+type Rules = "champions" | "smash";
+
+/** A deadline that never comes, so the editors' auto-submit stays quiet on a dev page. */
+const NEVER = () => Date.now() + 10 * 365 * 24 * 3600 * 1000;
+
+const valueCount = (strokes: Stroke[]) => strokes.reduce((n, s) => n + s.p.length, 0);
+const withoutPart = (s: Stroke): Stroke => {
+  const plain = { ...s };
+  delete plain.t;
+  return plain;
+};
+
+/** `/dev/draw`: the Skip Logic canvas and the fighter editor, each on its own, kept in this browser. */
+export function DrawLab() {
+  const [params, setParams] = useSearchParams();
+  const tab: Tab = params.get("tab") === "fighter" ? "fighter" : "sketch";
+  return (
+    <>
+      <div className="head">
+        <Title as="h1" size="md">
+          Drawing editors
+        </Title>
+        <Choice<Tab>
+          label="Editor"
+          value={tab}
+          options={[
+            { id: "sketch", name: <><Icon name="pencil" /> Skip Logic canvas</> },
+            { id: "fighter", name: <><Icon name="glove" /> Fighter editor</> },
+          ]}
+          onChange={(id) => setParams(id === "sketch" ? {} : { tab: id }, { replace: true })}
+        />
+      </div>
+      {tab === "sketch" ? <SketchEditor /> : <FighterEditor />}
+    </>
+  );
+}
+
+/** The JSON box with its buttons: export copies the drawing, import reads what's pasted. */
+function JsonTools({
+  text,
+  setText,
+  onExport,
+  onImport,
+  extra,
+  status,
+}: {
+  text: string;
+  setText: (text: string) => void;
+  onExport: () => void;
+  onImport: () => void;
+  extra: ReactNode;
+  status: Status | null;
+}) {
+  return (
+    <Panel pad="sm" className="tools">
+      <div className="buttons">
+        <Button size="sm" tone="teal" onClick={onExport}>
+          Export JSON
+        </Button>
+        <Button size="sm" tone="paper" onClick={onImport}>
+          Import JSON
+        </Button>
+        {extra}
+      </div>
+      <StatusLine status={status} />
+      <label className="json">
+        <span className="json-label">JSON (strokes as the server stores them) or brick shapes commands</span>
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} spellCheck={false} placeholder='[{"c":0,"w":1,"p":[100,100,400,300]}]  or  part body; fill circle 500 500 200' />
+      </label>
+    </Panel>
+  );
+}
+
+/** Exports a drawing to the box and the clipboard. */
+async function exportTo(json: string, count: number, setText: (t: string) => void, setStatus: (s: Status) => void) {
+  setText(json);
+  const copied = await copyText(json);
+  setStatus({ tone: "ok", text: `${count} stroke${count === 1 ? "" : "s"} exported${copied ? " and copied to the clipboard" : " (copy them from the box)"}.` });
+}
+
+function SketchEditor() {
+  /** `null` until the saved sketch is read, so the empty first render doesn't overwrite it. */
+  const [strokes, setStrokes] = useState<LocalStroke[] | null>(null);
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState<Status | null>(null);
+  const pending = useRef<LocalStroke | null>(null);
+
+  useEffect(() => setStrokes(savedSketch().map(toLocal)), []);
+  const packed = useMemo(() => (strokes ? packStrokes(strokes) : []), [strokes]);
+  useEffect(() => {
+    if (strokes) save(DEV_STORAGE.sketch, packed);
+  }, [packed]);
+
+  const commit = useCallback((stroke: LocalStroke) => setStrokes((s) => [...(s ?? []), stroke]), []);
+  const undo = useCallback(() => setStrokes((s) => (s ?? []).slice(0, -1)), []);
+  const clear = useCallback(() => setStrokes([]), []);
+  const load = (next: Stroke[], message: string) => {
+    setStrokes(next.map(toLocal));
+    setStatus({ tone: "ok", text: message });
+  };
+
+  if (!strokes) return <p className="wait">Loading your last sketch...</p>;
+  return (
+    <div className="lab">
+      <div className="main">
+        <DrawingCanvas
+          strokes={strokes}
+          onCommit={commit}
+          onUndo={undo}
+          onClear={clear}
+          pendingRef={pending}
+          actions={
+            <Button
+              size="lg"
+              quiet
+              onClick={() => {
+                const sent = packStrokes(pending.current ? [...strokes, pending.current] : strokes);
+                setText(drawingJson(sent));
+                setStatus({ tone: "ok", text: `"Done drawing" would send these ${sent.length} strokes (in the box). Nothing was sent.` });
+              }}
+            >
+              Done drawing
+            </Button>
+          }
+        />
+      </div>
+      <div className="side">
+        <JsonTools
+          text={text}
+          setText={setText}
+          status={status}
+          onExport={() => void exportTo(drawingJson(packed), packed.length, setText, setStatus)}
+          onImport={() => {
+            try {
+              const { strokes: next } = parseDrawing(text, DRAWING_LIMITS);
+              load(next, `Imported ${next.length} strokes.`);
+            } catch (error) {
+              setStatus({ tone: "error", text: (error as Error).message });
+            }
+          }}
+          extra={
+            <>
+              <Button
+                size="sm"
+                tone="grape"
+                onClick={() => {
+                  const seed = randomSeed();
+                  const rng = createRng(seed);
+                  load(drawShapes(randomFighterShapes(rng.next), rng.next).map(withoutPart), `A bot's random fighter, as a sketch (seed ${seed}).`);
+                }}
+              >
+                Random bot doodle
+              </Button>
+              <Button size="sm" tone="coral" onClick={() => load([], "Cleared.")}>
+                Clear
+              </Button>
+            </>
+          }
+        />
+        <Panel pad="sm" className="sent">
+          <h2 className="side-title">What the others see</h2>
+          <p className="note">
+            {packed.length} / {DRAWING_LIMITS.maxStrokes} strokes · {valueCount(packed)} / {DRAWING_LIMITS.maxValues} values, after packing
+          </p>
+          <div className="frame">
+            <Drawing strokes={packed} label="The sketch as stored" />
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function FighterEditor() {
+  /** What the editor starts from; a new `key` starts it over (a load, a clear, after a test submit). */
+  const [boot, setBoot] = useState<{ key: number; strokes: LocalStroke[]; weapon: WeaponKind } | null>(null);
+  const [rules, setRules] = useState<Rules>("champions");
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState<Status | null>(null);
+  const [size, setSize] = useState({ strokes: 0, values: 0 });
+  const endsAt = useMemo(NEVER, []);
+  const latest = useRef<{ strokes: Stroke[]; weapon: WeaponKind }>({ strokes: [], weapon: "blade" });
+
+  useEffect(() => {
+    const saved = savedFighter();
+    setBoot({ key: 1, strokes: saved?.strokes.map(toLocal) ?? [], weapon: saved?.weapon ?? "blade" });
+  }, []);
+
+  const load = (strokes: Stroke[], weapon: WeaponKind, message: string) => {
+    setBoot((b) => ({ key: (b?.key ?? 0) + 1, strokes: strokes.map(toLocal), weapon }));
+    setStatus({ tone: "ok", text: message });
+  };
+  const onChange = useCallback((strokes: LocalStroke[], weapon: WeaponKind) => {
+    const packed = packStrokes(strokes, DOODLE_LIMITS);
+    latest.current = { strokes: packed, weapon };
+    save(DEV_STORAGE.fighter, latest.current);
+    setSize({ strokes: packed.length, values: valueCount(packed) });
+  }, []);
+
+  if (!boot) return <p className="wait">Loading your last fighter...</p>;
+  return (
+    <div className="fighter">
+      <JsonTools
+        text={text}
+        setText={setText}
+        status={status}
+        onExport={() => void exportTo(drawingJson(latest.current.strokes, latest.current.weapon), latest.current.strokes.length, setText, setStatus)}
+        onImport={() => {
+          try {
+            const { strokes, weapon } = parseDrawing(text, DOODLE_LIMITS);
+            load(strokes, weapon ?? latest.current.weapon, `Imported ${strokes.length} strokes.`);
+          } catch (error) {
+            setStatus({ tone: "error", text: (error as Error).message });
+          }
+        }}
+        extra={
+          <>
+            <Button
+              size="sm"
+              tone="grape"
+              onClick={() => {
+                const seed = randomSeed();
+                const f = randomSmashFighter(createRng(seed).next);
+                load(f.strokes, f.weapon, `A random bot fighter (seed ${seed}), with a ${f.weapon}.`);
+              }}
+            >
+              Load a random bot fighter
+            </Button>
+            <Button size="sm" tone="paper" onClick={() => load(shapesToFighter(DUMMY_SHAPES, createRng(1).next), "blade", "The training dummy.")}>
+              Training dummy
+            </Button>
+            <Button size="sm" tone="coral" onClick={() => load([], latest.current.weapon, "Cleared every part.")}>
+              Clear
+            </Button>
+          </>
+        }
+      />
+      <div className="bar">
+        <span className="bar-label">Stats for</span>
+        <Choice<Rules>
+          label="Stats for"
+          value={rules}
+          options={[
+            { id: "champions", name: <><Icon name="swords" /> Doodle Champions</> },
+            { id: "smash", name: <><Icon name="burst" /> Doodle Smash</> },
+          ]}
+          onChange={setRules}
+        />
+        <span className="note">
+          {size.strokes} / {DOODLE_LIMITS.maxStrokes} strokes · {size.values} / {DOODLE_LIMITS.maxValues} values
+        </span>
+        <Link to="/dev/fighter" className="go">
+          Open in the fighter viewer →
+        </Link>
+      </div>
+      <DrawFighter
+        key={boot.key}
+        endsAt={endsAt}
+        initialStrokes={boot.strokes}
+        initialWeapon={boot.weapon}
+        onChange={onChange}
+        weaponToggle={rules === "smash"}
+        ready={rules === "smash" ? "Ready to smash!" : "Ready to fight!"}
+        sheet={rules === "smash" ? (fighter, weapon) => <SmashSheet spec={smashSpec(fighter.stats, fighter.rig, weapon)} /> : undefined}
+        onSubmit={(strokes, weapon) => {
+          setText(drawingJson(strokes, weapon));
+          // The editor sends once; starting it over with the same drawing arms it again.
+          load(strokes, weapon, `The game would get these ${strokes.length} strokes and a ${weapon} (in the box). Nothing was sent.`);
+        }}
+      />
+    </div>
+  );
+}
+
+<style>
+  .head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+  .wait { font-weight: 900; color: var(--paper); }
+  .lab { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); gap: 18px; align-items: start; }
+  .main { min-width: 0; }
+  .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .tools { display: flex; flex-direction: column; gap: 8px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+  .json { display: flex; flex-direction: column; gap: 4px; }
+  .json-label { font-weight: 900; font-size: 13px; color: var(--muted); }
+  .json textarea {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    border: 3px solid var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 8px;
+    resize: vertical;
+    background: #f8fbff;
+  }
+  .sent { display: flex; flex-direction: column; gap: 8px; }
+  .side-title { font-family: var(--font-display); font-weight: 400; font-size: 20px; }
+  .frame { border: 3px solid var(--ink); border-radius: var(--radius-sm); overflow: hidden; max-width: 320px; }
+  .note { font-weight: 800; font-size: 13px; color: var(--muted); }
+  .fighter { display: flex; flex-direction: column; gap: 14px; }
+  .bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+  }
+  .bar-label { font-weight: 900; font-size: 14px; }
+  .go { margin-left: auto; font-weight: 900; color: var(--teal-ink); }
+
+  @media (width < 900px) {
+    .lab { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>

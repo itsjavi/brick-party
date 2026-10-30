@@ -1,0 +1,264 @@
+import {
+  SMASH_LIVES,
+  SMASH_TICK_MS,
+  STAGES,
+  STAGE_IDS,
+  applyInput,
+  createRng,
+  fighterRig,
+  fighterStats,
+  newFight,
+  packBody,
+  packShot,
+  randomSeed,
+  randomSmashFighter,
+  smashBot,
+  smashSpec,
+  stepFight,
+  stockName,
+  type SmashFight,
+  type SmashFightView,
+  type SmashSpec,
+  type StageId,
+  type WeaponKind,
+} from "@brick/game";
+import { useEffect, useRef, useState } from "react";
+import { AVATAR_HEX } from "../../lib/avatar";
+import type { FigureSource } from "../games/doodle/FightArena.stsx";
+import { Arena } from "../games/smash/Arena.stsx";
+import { useSmashControls } from "../games/smash/controls";
+import { FightClient } from "../games/smash/netcode";
+import type { Contender, FightFeed } from "../games/smash/renderer";
+import { TouchPad } from "../games/smash/TouchPad.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Choice } from "./DevBits.stsx";
+
+/**
+ * Doodle Smash on this screen only: the same pure rules the room runs (`stepFight`, `smashBot`), stepped here every
+ * 50 ms, and fed to the real `FightClient` and `Arena` as if they were the server's updates. No room, no network.
+ * Like the room's, the updates go straight to the canvas, not through React.
+ */
+
+const BOT_COLORS = [AVATAR_HEX.coral, AVATAR_HEX.grape, AVATAR_HEX.sun, AVATAR_HEX.lime, AVATAR_HEX.rose];
+/** Events a view carries, like the room's (`EVENT_TICKS` in doodle-smash.ts). */
+const EVENT_TICKS = 12;
+
+interface Options {
+  stage: StageId;
+  bots: number;
+  /** Bots fight back; off, they're punching bags that stand still. */
+  ai: boolean;
+  /** Lives top back up, so the fight never ends. */
+  endless: boolean;
+}
+
+/** The fight as the room would send it to fighter 0. */
+function viewOf(f: SmashFight): SmashFightView {
+  return {
+    tick: f.tick,
+    stage: f.stage,
+    seed: f.seed,
+    over: f.over,
+    bodies: f.bodies.map(packBody),
+    mine: f.bodies[0] ? { ...f.bodies[0] } : null,
+    shots: f.shots.map(packShot),
+    items: f.items,
+    events: f.events.filter((e) => e.t > f.tick - EVENT_TICKS),
+    outOrder: f.outOrder,
+    tally: f.over >= 0 ? f.tally : null,
+  };
+}
+
+/** Whether this looks like a phone or tablet, which gets on-screen buttons. */
+function useTouch(): boolean {
+  const [touch, setTouch] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(pointer: coarse), (width < 760px)");
+    const update = () => setTouch(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return touch;
+}
+
+/** The sandbox's settings, and the fight once started. */
+export function SmashSandbox({ figure, weapon }: { figure: FigureSource; weapon: WeaponKind }) {
+  const [options, setOptions] = useState<Options>({ stage: "sketchbook", bots: 1, ai: true, endless: true });
+  const [run, setRun] = useState(0);
+  const set = (patch: Partial<Options>) => setOptions((o) => ({ ...o, ...patch }));
+  return (
+    <Panel pad="sm" className="sandbox">
+      <div className="top">
+        <h2 className="title">
+          <Icon name="burst" /> Doodle Smash sandbox
+        </h2>
+        <div className="buttons">
+          <Button size="sm" tone={run ? "paper" : "teal"} onClick={() => setRun((n) => n + 1)}>
+            {run ? "Restart" : "Start the fight"}
+          </Button>
+          {run ? (
+            <Button size="sm" tone="coral" onClick={() => setRun(0)}>
+              Stop
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      <div className="settings">
+        <div className="row">
+          <span className="label">Stage</span>
+          <Choice<StageId> label="Stage" value={options.stage} options={STAGE_IDS.map((id) => ({ id, name: STAGES[id].name }))} onChange={(stage) => set({ stage })} />
+        </div>
+        <div className="row">
+          <span className="label">Bots</span>
+          <Choice<number> label="Bots" value={options.bots} options={[0, 1, 2, 3, 5].map((n) => ({ id: n, name: String(n) }))} onChange={(bots) => set({ bots })} />
+          <label className="check">
+            <input type="checkbox" checked={options.ai} onChange={(e) => set({ ai: e.target.checked })} /> Bots fight back
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={options.endless} onChange={(e) => set({ endless: e.target.checked })} /> Endless lives
+          </label>
+        </div>
+        <p className="hint">
+          Your fighter is the one above, with its weapon kind. Settings apply when you start or restart. While it runs, the arrows or WASD, Space and B or Shift
+          control it (not while typing in a field). Bots are random bot fighters with the rooms' bot AI.
+        </p>
+      </div>
+      {run ? <Fight key={run} figure={figure} weapon={weapon} options={options} /> : null}
+    </Panel>
+  );
+}
+
+interface Setup {
+  cast: SmashSpec[];
+  contenders: Contender[];
+  fight: SmashFight;
+  client: FightClient;
+  /** The "server's" updates, for the arena. */
+  fights: FightFeed;
+  send: (view: SmashFightView) => void;
+}
+
+/** Updates anyone can listen to; a new listener hears the latest at once. */
+function fightFeed(): { fights: FightFeed; send: (view: SmashFightView) => void } {
+  const listeners = new Set<(view: SmashFightView) => void>();
+  let latest: SmashFightView | null = null;
+  return {
+    fights: (listener) => {
+      listeners.add(listener);
+      if (latest) listener(latest);
+      return () => listeners.delete(listener);
+    },
+    send: (view) => {
+      latest = view;
+      for (const listener of listeners) listener(view);
+    },
+  };
+}
+
+function setUp(figure: FigureSource, weapon: WeaponKind, { stage, bots }: Options): Setup {
+  const seed = randomSeed();
+  const rng = createRng(seed);
+  const mine = smashSpec(figure.stats, figure.rig, weapon);
+  const cast: SmashSpec[] = [mine];
+  const contenders: Contender[] = [{ name: "You", color: AVATAR_HEX.teal, spec: mine, weapon: mine.weapon, figure, mine: true }];
+  for (let i = 0; i < bots; i++) {
+    const drawn = randomSmashFighter(rng.next);
+    const rig = fighterRig(drawn.strokes);
+    const stats = fighterStats(drawn.strokes, rig);
+    const spec = smashSpec(stats, rig, drawn.weapon);
+    cast.push(spec);
+    contenders.push({
+      name: stockName(stats, drawn.strokes, seed + i),
+      color: BOT_COLORS[i % BOT_COLORS.length]!,
+      spec,
+      weapon: spec.weapon,
+      figure: { strokes: drawn.strokes, rig, stats },
+      mine: false,
+    });
+  }
+  return { cast, contenders, fight: newFight(stage, cast.length, seed), client: new FightClient(0, cast, stage), ...fightFeed() };
+}
+
+function Fight({ figure, weapon, options }: { figure: FigureSource; weapon: WeaponKind; options: Options }) {
+  // Settings are read once: a restart (a new `key`) picks up new ones.
+  const [setup] = useState(() => setUp(figure, weapon, options));
+  const [over, setOver] = useState(false);
+  const fight = useRef(setup.fight);
+  const { cast, client, send } = setup;
+
+  // The "server": steps the fight on the clock, with the bots' keys, and sends every update to the client.
+  useEffect(() => {
+    let startedAt = performance.now();
+    send(viewOf(fight.current));
+    const timer = setInterval(() => {
+      const now = performance.now();
+      let f = fight.current;
+      // Past the end, the fight stays on its last moment.
+      if (f.over >= 0 && f.tick > f.over + 60) return;
+      let behind = Math.floor((now - startedAt) / SMASH_TICK_MS) - f.tick;
+      // A hidden tab or a stall: carry on from now instead of racing through the missed ticks.
+      if (behind > 20) {
+        startedAt = now - (f.tick + 1) * SMASH_TICK_MS;
+        behind = 1;
+      }
+      if (behind <= 0) return;
+      for (; behind > 0; behind--) {
+        for (let i = 1; i < f.bodies.length; i++) {
+          const b = f.bodies[i]!;
+          if (options.endless && b.lives > 0) b.lives = SMASH_LIVES;
+          if (!options.ai || b.out !== 0) continue;
+          const want = smashBot(f, cast, i);
+          if (want.held === b.held && want.attack === b.atkHeld) continue;
+          applyInput(b, want.held, want.attack === b.atkHeld ? null : want.attack ? "press" : "release", b.ack + 1);
+        }
+        const me = f.bodies[0];
+        if (options.endless && me && me.lives > 0) me.lives = SMASH_LIVES;
+        f = stepFight(f, cast);
+      }
+      fight.current = f;
+      send(viewOf(f));
+      setOver(f.over >= 0);
+    }, SMASH_TICK_MS / 2);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Your keys: straight to your fighter on this screen, and to the "server" as the room would get them.
+  const keys = useSmashControls(
+    true,
+    (message) => {
+      const me = fight.current.bodies[0];
+      if (me) applyInput(me, message.held, message.attack, message.seq);
+      client.sent(message.seq);
+    },
+    (held, attack) => client.input(held, attack),
+  );
+  const touch = useTouch();
+
+  return (
+    <div className="fight">
+      <Arena client={client} stage={setup.fight.stage} contenders={setup.contenders} fights={setup.fights} me={0} />
+      {touch ? <TouchPad keys={keys} /> : null}
+      <p className="hint center">
+        {over ? "Game over: restart for another round." : options.endless ? "Endless lives." : `${SMASH_LIVES} lives each.`}
+      </p>
+    </div>
+  );
+}
+
+<style>
+  .sandbox { display: flex; flex-direction: column; gap: 10px; }
+  .top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+  .title { font-family: var(--font-display); font-weight: 400; font-size: 24px; }
+  .buttons { display: flex; gap: 8px; }
+  .settings { display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .label { font-weight: 900; font-size: 14px; min-width: 44px; }
+  .check { display: inline-flex; align-items: center; gap: 6px; font-weight: 900; font-size: 14px; cursor: pointer; }
+  .check input { width: 18px; height: 18px; accent-color: var(--teal-ink); }
+  .hint { font-weight: 700; font-size: 13px; color: var(--muted); }
+  .center { text-align: center; }
+  .fight { display: flex; flex-direction: column; gap: 8px; }
+</style>

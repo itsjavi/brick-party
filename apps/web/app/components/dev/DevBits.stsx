@@ -1,0 +1,112 @@
+import type { ReactNode } from "react";
+import { playSfx } from "../../lib/audio";
+
+/** Small controls the dev pages share: a pill toggle group, a labelled slider and a status line. */
+
+/** Pills to pick one of a few options. */
+export function Choice<T extends string | number>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly { id: T; name: ReactNode }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="choice" role="radiogroup" aria-label={label}>
+      {options.map((o) => (
+        <button
+          key={String(o.id)}
+          type="button"
+          role="radio"
+          aria-checked={value === o.id}
+          className={value === o.id ? "pill on" : "pill"}
+          onClick={() => {
+            playSfx("pop");
+            onChange(o.id);
+          }}
+        >
+          {o.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** A range input with its label and value. */
+export function Slider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+  format = (n) => String(n),
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+  format?: (value: number) => string;
+}) {
+  return (
+    <label className="slider">
+      <span className="slider-label">{label}</span>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} />
+      <span className="slider-value">{format(value)}</span>
+    </label>
+  );
+}
+
+export interface Status {
+  tone: "ok" | "error";
+  text: string;
+}
+
+/** What the last button did, or what went wrong. */
+export function StatusLine({ status }: { status: Status | null }) {
+  return (
+    <p className={status?.tone === "error" ? "status error" : "status"} role="status">
+      {status?.text ?? " "}
+    </p>
+  );
+}
+
+/** Copies text to the clipboard; false when the browser won't. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+<style>
+  .choice { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: inherit;
+    font-weight: 900;
+    font-size: 14px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    box-shadow: 0 3px 0 var(--ink);
+    padding: 4px 12px;
+    cursor: pointer;
+  }
+  .pill.on { background: var(--sun); translate: 0 -2px; }
+  .slider { display: grid; grid-template-columns: 110px minmax(0, 1fr) 52px; align-items: center; gap: 8px; font-weight: 900; font-size: 14px; }
+  .slider input { width: 100%; accent-color: var(--teal-ink); }
+  .slider-value { text-align: right; font-variant-numeric: tabular-nums; }
+  .status { font-weight: 800; font-size: 14px; color: var(--teal-ink); min-height: 20px; overflow-wrap: anywhere; }
+  .status.error { color: #b42318; }
+</style>

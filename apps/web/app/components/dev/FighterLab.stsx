@@ -1,0 +1,428 @@
+import {
+  ACT,
+  DUMMY_SHAPES,
+  TICK_MS,
+  createRng,
+  fighterRig,
+  fighterStats,
+  randomSeed,
+  randomSmashFighter,
+  shapesToFighter,
+  smashSpec,
+  stockName,
+  type FighterStats,
+  type MoveStyle,
+  type Stroke,
+  type WeaponKind,
+} from "@brick/game";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
+import { StatSheet } from "../games/doodle/DrawFighter.stsx";
+import { FighterFigure, type FigureSource } from "../games/doodle/FightArena.stsx";
+import { poseAt, type Moment, type Pose } from "../games/doodle/pose";
+import { Button } from "../ui/Button.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Title } from "../ui/Title.stsx";
+import { Choice, Slider, StatusLine, type Status } from "./DevBits.stsx";
+import { RawNumbers, SmashSheet } from "./FighterSheets.stsx";
+import { SmashSandbox } from "./SmashSandbox.stsx";
+import { DEV_STORAGE, parseDrawing, save, savedFighter } from "./strokes";
+
+type Anim = "idle" | "walk" | "jump" | "attack" | "hurt" | "ko" | "topple";
+
+const ANIMS: { id: Anim; name: string }[] = [
+  { id: "idle", name: "Idle" },
+  { id: "walk", name: "Walk / run" },
+  { id: "jump", name: "Jump" },
+  { id: "attack", name: "Attack" },
+  { id: "hurt", name: "Hurt" },
+  { id: "ko", name: "KO spin" },
+  { id: "topple", name: "Topple" },
+];
+
+const STYLES: { id: MoveStyle | "auto"; name: string }[] = [
+  { id: "auto", name: "Its own" },
+  { id: "walk", name: "Walk" },
+  { id: "stride", name: "Stride" },
+  { id: "scuttle", name: "Scuttle" },
+  { id: "hop", name: "Hop" },
+  { id: "roll", name: "Roll" },
+  { id: "slide", name: "Slide" },
+];
+
+/** The viewer's picture, in its own units. */
+const VIEW = { width: 600, height: 440, floor: 400 };
+/** How high a jump goes in the viewer, and for how many ticks. */
+const JUMP = { height: 110, ticks: 12, every: 18 };
+
+interface Source {
+  strokes: Stroke[];
+  weapon: WeaponKind;
+  label: string;
+  seed: number;
+}
+
+/** A fighter from strokes, or `null` without a body. */
+function figureOf(strokes: Stroke[]): FigureSource | null {
+  if (!strokes.some((s) => (s.t ?? "body") === "body")) return null;
+  const rig = fighterRig(strokes);
+  return { strokes, rig, stats: fighterStats(strokes, rig) };
+}
+
+function randomSource(): Source {
+  const seed = randomSeed();
+  const f = randomSmashFighter(createRng(seed).next);
+  return { ...f, label: `A random bot fighter (seed ${seed})`, seed };
+}
+
+/** Where a fighter is and what it's doing `t` ticks into an animation, which loops. */
+function momentFor(anim: Anim, t: number, stats: FighterStats, walk: number, face: 1 | -1): Moment {
+  const m: Moment = { x: 0, y: 0, act: ACT.idle, face, dist: 0, t, sinceAttack: Infinity, sinceHurt: Infinity, sinceKo: -Infinity };
+  switch (anim) {
+    case "walk":
+      return { ...m, act: ACT.move, dist: t * stats.speed * walk };
+    case "jump": {
+      const s = t % JUMP.every;
+      if (s >= JUMP.ticks) return m;
+      const u = s / JUMP.ticks;
+      return { ...m, act: ACT.air, y: 4 * JUMP.height * u * (1 - u) };
+    }
+    case "attack": {
+      const s = t % Math.max(4, stats.cooldown);
+      return { ...m, act: s < 1 ? ACT.attack : ACT.idle, sinceAttack: s };
+    }
+    case "hurt": {
+      const s = t % 10;
+      return { ...m, act: s < 3 ? ACT.hurt : ACT.idle, sinceHurt: s };
+    }
+    case "ko":
+      return { ...m, act: ACT.ko, sinceKo: t % 26 };
+    case "topple": {
+      const s = t % 26;
+      return { ...m, act: s < 2 ? ACT.hurt : ACT.down, sinceHurt: s };
+    }
+    default:
+      return m;
+  }
+}
+
+/** Ticks of animation time, running at `rate` while not paused; settable, to step or restart. */
+function useTicks(paused: boolean, rate: number) {
+  const [t, setT] = useState(0);
+  const speed = useRef(rate);
+  speed.current = rate;
+  useEffect(() => {
+    if (paused) return;
+    let frame = 0;
+    let last = performance.now();
+    const loop = (now: number) => {
+      const dt = Math.min(100, now - last);
+      last = now;
+      setT((v) => v + (dt / TICK_MS) * speed.current);
+      frame = requestAnimationFrame(loop);
+    };
+    frame = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(frame);
+  }, [paused]);
+  return [t, setT] as const;
+}
+
+/** `/dev/fighter`: one fighter, every animation, its rig and its stats in both games, and a sandbox fight. */
+export function FighterLab() {
+  const navigate = useNavigate();
+  const [source, setSource] = useState<Source | null>(null);
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState<Status | null>(null);
+
+  useEffect(() => {
+    const saved = savedFighter();
+    setSource(saved ? { ...saved, label: "Your drawing from /dev/draw", seed: 1 } : randomSource());
+  }, []);
+
+  const figure = useMemo(() => (source ? figureOf(source.strokes) : null), [source?.strokes]);
+  const use = (next: Source) => {
+    setSource(next);
+    setStatus({ tone: "ok", text: `Showing: ${next.label}.` });
+  };
+
+  return (
+    <>
+      <div className="head">
+        <Title as="h1" size="md">
+          Fighter viewer
+        </Title>
+        {figure && source ? <span className="name">“{stockName(figure.stats, source.strokes, source.seed)}”</span> : null}
+      </div>
+      <Panel pad="sm" className="source">
+        <div className="buttons">
+          <Button
+            size="sm"
+            tone="teal"
+            onClick={() => {
+              const saved = savedFighter();
+              if (saved) use({ ...saved, label: "Your drawing from /dev/draw", seed: 1 });
+              else setStatus({ tone: "error", text: "Nothing saved yet: draw a fighter in /dev/draw first." });
+            }}
+          >
+            From /dev/draw
+          </Button>
+          <Button size="sm" tone="grape" onClick={() => use(randomSource())}>
+            Random bot fighter
+          </Button>
+          <Button size="sm" tone="paper" onClick={() => use({ strokes: shapesToFighter(DUMMY_SHAPES, createRng(1).next), weapon: "blade", label: "The training dummy", seed: 1 })}>
+            Training dummy
+          </Button>
+          <Button
+            size="sm"
+            tone="paper"
+            onClick={() => {
+              try {
+                const { strokes, weapon } = parseDrawing(text);
+                use({ strokes, weapon: weapon ?? source?.weapon ?? "blade", label: "The pasted drawing", seed: 1 });
+              } catch (error) {
+                setStatus({ tone: "error", text: (error as Error).message });
+              }
+            }}
+          >
+            Load pasted
+          </Button>
+          <Button
+            size="sm"
+            tone="sun"
+            disabled={!source}
+            title="Replaces the drawing saved in /dev/draw"
+            onClick={() => {
+              if (!source) return;
+              save(DEV_STORAGE.fighter, { strokes: source.strokes, weapon: source.weapon });
+              navigate("/dev/draw?tab=fighter");
+            }}
+          >
+            Edit this one in /dev/draw
+          </Button>
+        </div>
+        <StatusLine status={status ?? (source ? { tone: "ok", text: `Showing: ${source.label}.` } : null)} />
+        <textarea
+          className="paste"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={3}
+          spellCheck={false}
+          placeholder="Paste exported JSON or brick shapes commands, then Load pasted"
+        />
+      </Panel>
+      {!source ? <p className="wait">Loading a fighter...</p> : null}
+      {source && !figure ? <p className="wait">This drawing has no body, so it isn't a fighter. Load another one.</p> : null}
+      {source && figure ? (
+        <>
+          <div className="lab">
+            <Viewer figure={figure} />
+            <Stats figure={figure} weapon={source.weapon} onWeapon={(weapon) => setSource({ ...source, weapon })} />
+          </div>
+          <SmashSandbox figure={figure} weapon={source.weapon} />
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function Viewer({ figure }: { figure: FigureSource }) {
+  const [anim, setAnim] = useState<Anim>("walk");
+  const [style, setStyle] = useState<MoveStyle | "auto">("auto");
+  const [face, setFace] = useState<1 | -1>(1);
+  const [rate, setRate] = useState(1);
+  const [walk, setWalk] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const [rig, setRig] = useState(true);
+  const [paused, setPaused] = useState(false);
+  const [t, setT] = useTicks(paused, rate);
+
+  const posable = useMemo<FigureSource>(
+    () => (style === "auto" ? figure : { ...figure, stats: { ...figure.stats, style } }),
+    [figure, style],
+  );
+  const moment = momentFor(anim, t, posable.stats, walk, face);
+  const pose = poseAt(posable, moment);
+  const [x0, y0, x1] = figure.rig.box;
+  const span = Math.max(200, x1 - x0, figure.rig.feet - y0);
+  const scale = (320 / span) * zoom;
+  const flip = face * (figure.rig.facesRight ? 1 : -1);
+  // Centers the whole drawing, not just its body.
+  const x = VIEW.width / 2 + (figure.rig.center[0] - (x0 + x1) / 2) * scale * flip;
+
+  return (
+    <Panel pad="sm" className="viewer">
+      <svg className="screen" viewBox={`0 0 ${VIEW.width} ${VIEW.height}`} role="img" aria-label={`The fighter, ${anim}`}>
+        <rect width={VIEW.width} height={VIEW.height} fill="#f8fbff" />
+        <line x1="0" x2={VIEW.width} y1={VIEW.floor} y2={VIEW.floor} stroke="#cbd5e1" strokeWidth="4" strokeDasharray="14 10" />
+        <ellipse cx={VIEW.width / 2} cy={VIEW.floor + 2} rx={150} ry={12} fill="rgba(27, 31, 59, 0.12)" />
+        <FighterFigure fighter={posable} pose={pose} x={x} y={moment.y} face={face} floor={VIEW.floor} scale={scale} />
+        {rig ? <RigOverlay figure={figure} pose={pose} x={x} y={moment.y} face={face} scale={scale} /> : null}
+      </svg>
+      <div className="controls">
+        <Choice<Anim> label="Animation" value={anim} options={ANIMS} onChange={setAnim} />
+        <div className="row">
+          <span className="row-label">Moves like</span>
+          <Choice label="Move style" value={style} options={STYLES} onChange={setStyle} />
+        </div>
+        <p className="hint">
+          Its own: <b>{figure.stats.style}</b>. Legless fighters roll, hop or slide when they walk; tall ones topple.
+        </p>
+        <div className="row">
+          <Choice<1 | -1>
+            label="Facing"
+            value={face}
+            options={[
+              { id: -1, name: "◀ Left" },
+              { id: 1, name: "Right ▶" },
+            ]}
+            onChange={setFace}
+          />
+          <label className="check">
+            <input type="checkbox" checked={rig} onChange={(e) => setRig(e.target.checked)} /> Show the rig
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={paused} onChange={(e) => setPaused(e.target.checked)} /> Pause
+          </label>
+          <Button size="sm" tone="paper" quiet disabled={!paused} onClick={() => setT((v) => Math.floor(v) + 1)}>
+            Step 1 tick
+          </Button>
+          <Button size="sm" tone="paper" quiet onClick={() => setT(0)}>
+            Restart
+          </Button>
+        </div>
+        <Slider label="Playback" value={rate} min={0.1} max={3} step={0.1} onChange={setRate} format={(n) => `${n.toFixed(1)}×`} />
+        <Slider label="Walk speed" value={walk} min={0.25} max={3} step={0.25} onChange={setWalk} format={(n) => `${n.toFixed(2)}×`} />
+        <Slider label="Scale" value={zoom} min={0.3} max={2} step={0.05} onChange={setZoom} format={(n) => `${n.toFixed(2)}×`} />
+        <p className="hint">
+          Tick {t.toFixed(1)} · {TICK_MS} ms per tick · walks at {figure.stats.speed} floor units a tick in Doodle Champions
+        </p>
+        {rig ? (
+          <p className="legend">
+            <span className="key k-pivot" /> joints <span className="key k-tip" /> limb tips <span className="key k-center" /> body center <span className="key k-feet" /> feet line <span className="key k-box" /> body box
+          </p>
+        ) : null}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * The rig over the fighter, posed the same way `FighterFigure` poses it: joints where limbs pivot, lines to their tips,
+ * the body's center and box, and the feet line it stands on.
+ */
+function RigOverlay({ figure, pose, x, y, face, scale }: { figure: FigureSource; pose: Pose; x: number; y: number; face: 1 | -1; scale: number }) {
+  const { rig } = figure;
+  const [cx, cy] = rig.center;
+  const feet = rig.feet;
+  const flip = face * (rig.facesRight ? 1 : -1);
+  const pivot = pose.aroundFeet ? `${cx} ${feet}` : `${cx} ${cy}`;
+  // Marks keep their size on screen whatever the scale.
+  const r = 5 / scale;
+  const w = 2.5 / scale;
+  const [bx0, by0, bx1, by1] = rig.bodyBox;
+  const [ax0, , ax1] = rig.box;
+  const held = rig.weapon?.arm ?? null;
+  const weaponMarks = rig.weapon ? (
+    <g>
+      <line x1={rig.weapon.pivot[0]} y1={rig.weapon.pivot[1]} x2={rig.weapon.tip[0]} y2={rig.weapon.tip[1]} stroke="#8b5cf6" strokeWidth={w} strokeDasharray={`${4 * w} ${3 * w}`} />
+      <circle cx={rig.weapon.tip[0]} cy={rig.weapon.tip[1]} r={r} fill="#8b5cf6" />
+      <rect x={rig.weapon.pivot[0] - r} y={rig.weapon.pivot[1] - r} width={2 * r} height={2 * r} fill="#ffffff" stroke="#8b5cf6" strokeWidth={w} />
+    </g>
+  ) : null;
+  return (
+    <g transform={`translate(${x} ${VIEW.floor - y - pose.lift}) scale(${flip * scale} ${scale}) translate(${-cx} ${-feet})`} pointerEvents="none">
+      <g
+        transform={`translate(${pose.jitter} ${pose.bob}) rotate(${pose.body} ${pivot}) translate(${cx} ${feet}) scale(${1 / pose.squash} ${pose.squash}) skewX(${pose.skew}) translate(${-cx} ${-feet})`}
+      >
+        <rect x={bx0} y={by0} width={bx1 - bx0} height={by1 - by0} fill="none" stroke="#0ea5e9" strokeWidth={w} strokeDasharray={`${5 * w} ${4 * w}`} />
+        <line x1={ax0 - 40} x2={ax1 + 40} y1={feet} y2={feet} stroke="#16a34a" strokeWidth={w} />
+        <line x1={cx - 3 * r} x2={cx + 3 * r} y1={cy} y2={cy} stroke="#ef4444" strokeWidth={w * 1.4} />
+        <line x1={cx} x2={cx} y1={cy - 3 * r} y2={cy + 3 * r} stroke="#ef4444" strokeWidth={w * 1.4} />
+        {rig.weapon && held === null ? <g transform={`rotate(${pose.weapon} ${rig.weapon.pivot[0]} ${rig.weapon.pivot[1]})`}>{weaponMarks}</g> : null}
+        {rig.limbs.map((l, i) => (
+          <g key={i} transform={`rotate(${pose.limbs[i] ?? 0} ${l.pivot[0]} ${l.pivot[1]})`}>
+            <line x1={l.pivot[0]} y1={l.pivot[1]} x2={l.tip[0]} y2={l.tip[1]} stroke={l.part === "legs" ? "#f97316" : "#db2777"} strokeWidth={w} />
+            <circle cx={l.tip[0]} cy={l.tip[1]} r={r * 0.8} fill={l.part === "legs" ? "#f97316" : "#db2777"} />
+            <circle cx={l.pivot[0]} cy={l.pivot[1]} r={r} fill="#ffffff" stroke="#1b1f3b" strokeWidth={w} />
+            {held === i ? weaponMarks : null}
+          </g>
+        ))}
+      </g>
+    </g>
+  );
+}
+
+function Stats({ figure, weapon, onWeapon }: { figure: FigureSource; weapon: WeaponKind; onWeapon: (weapon: WeaponKind) => void }) {
+  const spec = smashSpec(figure.stats, figure.rig, weapon);
+  return (
+    <div className="stats">
+      <Panel pad="sm" className="sheet">
+        <h2 className="sheet-title">
+          <Icon name="swords" /> Doodle Champions
+        </h2>
+        <StatSheet stats={figure.stats} />
+        <RawNumbers values={figure.stats} label="Every stat (fighterStats)" />
+      </Panel>
+      <Panel pad="sm" className="sheet">
+        <h2 className="sheet-title">
+          <Icon name="burst" /> Doodle Smash
+        </h2>
+        <Choice<WeaponKind>
+          label="Weapon kind"
+          value={weapon}
+          options={[
+            { id: "blade", name: <><Icon name="sword" /> Blade</> },
+            { id: "blaster", name: <><Icon name="blaster" /> Blaster</> },
+          ]}
+          onChange={onWeapon}
+        />
+        {figure.rig.weapon ? null : <p className="hint">No weapon drawn, so it fights with its fists either way.</p>}
+        <SmashSheet spec={spec} />
+        <RawNumbers values={spec} label="Every number (smashSpec)" />
+      </Panel>
+    </div>
+  );
+}
+
+<style>
+  .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+  .name { font-family: var(--font-display); font-size: 24px; color: var(--paper); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill; }
+  .source { display: flex; flex-direction: column; gap: 8px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+  .paste {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    border: 3px solid var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 8px;
+    resize: vertical;
+    background: #f8fbff;
+  }
+  .wait { font-weight: 900; color: var(--paper); }
+  .lab { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr); gap: 18px; align-items: start; }
+  .viewer { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .screen { display: block; width: 100%; height: auto; border: 3px solid var(--ink); border-radius: var(--radius-sm); overflow: hidden; }
+  .controls { display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .row-label { font-weight: 900; font-size: 14px; }
+  .check { display: inline-flex; align-items: center; gap: 6px; font-weight: 900; font-size: 14px; cursor: pointer; }
+  .check input { width: 18px; height: 18px; accent-color: var(--teal-ink); }
+  .hint { font-weight: 700; font-size: 13px; color: var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-weight: 800; font-size: 12px; color: var(--muted); }
+  .key { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-left: 6px; }
+  .k-pivot { background: #ffffff; border: 2px solid var(--ink); }
+  .k-tip { background: #f97316; }
+  .k-center { background: #ef4444; border-radius: 2px; }
+  .k-feet { background: #16a34a; border-radius: 2px; height: 4px; }
+  .k-box { border: 2px dashed #0ea5e9; border-radius: 2px; }
+  .stats { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .sheet { display: flex; flex-direction: column; gap: 10px; }
+  .sheet-title { font-family: var(--font-display); font-weight: 400; font-size: 22px; }
+
+  @media (width < 900px) {
+    .lab { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>

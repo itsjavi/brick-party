@@ -1,0 +1,101 @@
+import { GAME_IDS, MAX_PLAYERS, MIN_PLAYERS, type Avatar } from "@brick/game";
+import { Brick } from "../ui/Brick.stsx";
+
+/** A crowd of bricks for the card: every colour, a mix of hats, faces and shapes. */
+const CROWD: Avatar[] = [
+  { color: "coral", hat: "crown", face: "glasses", shape: "round" },
+  { color: "sun", hat: "party", face: "classic", shape: "brick" },
+  { color: "teal", hat: "headset", face: "blush", shape: "jelly" },
+  { color: "grape", hat: "tophat", face: "mustache", shape: "tile" },
+  { color: "sky", hat: "cap", face: "shades", shape: "triple" },
+  { color: "lime", hat: "beanie", face: "freckles", shape: "slim" },
+  { color: "rose", hat: "halo", face: "cyclops", shape: "round" },
+];
+
+/**
+ * The image shown when someone shares a link to the site (`og:image`), at 1200×630. `scripts/og-image.mjs`
+ * screenshots it from /dev/og into `public/og-image.png`.
+ */
+export function OgCard() {
+  return (
+    <div className="card">
+      <div className="dots" aria-hidden="true" />
+      <div className="copy">
+        <h1 className="logo">BRICK PARTY</h1>
+        <p className="tagline">The party game for your team call</p>
+        <p className="facts">
+          <span>{GAME_IDS.length} mini-games</span>
+          <span>
+            {MIN_PLAYERS}–{MAX_PLAYERS} players
+          </span>
+          <span>Right in the browser</span>
+        </p>
+      </div>
+      <div className="floor" aria-hidden="true" />
+      <div className="crowd">
+        {CROWD.map((avatar, i) => (
+          <span key={i} className="member" style={{ rotate: `${((i * 7) % 9) - 4}deg` }}>
+            <Brick avatar={avatar} size="lg" mood={i === 3 ? "wow" : i === 5 ? "sly" : "happy"} />
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+<style>
+  .card {
+    position: relative;
+    width: 1200px;
+    height: 630px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: linear-gradient(180deg, #59bdfd 0%, #3aaefc 70%, #2f8fe0 100%);
+  }
+  .dots {
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.22) 3px, transparent 3.5px);
+    background-size: 34px 34px;
+  }
+  .copy { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 58px; }
+  .logo {
+    margin: 0;
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-size: 150px;
+    line-height: 1;
+    letter-spacing: 2px;
+    color: var(--paper);
+    -webkit-text-stroke: 12px var(--ink);
+    paint-order: stroke fill;
+    text-shadow: 0 12px 0 var(--ink);
+    rotate: -2deg;
+  }
+  .tagline {
+    margin: 14px 0 0;
+    font-weight: 900;
+    font-size: 40px;
+    color: var(--ink);
+    background: var(--sun);
+    border: 5px solid var(--ink);
+    border-radius: 999px;
+    box-shadow: 0 6px 0 var(--ink);
+    padding: 6px 30px 10px;
+  }
+  .facts { display: flex; gap: 14px; margin: 8px 0 0; }
+  .facts span {
+    font-weight: 900;
+    font-size: 24px;
+    color: var(--ink);
+    background: var(--paper);
+    border: 4px solid var(--ink);
+    border-radius: 999px;
+    padding: 4px 18px 6px;
+  }
+  .crowd { position: absolute; bottom: 64px; display: flex; gap: 26px; align-items: flex-end; }
+  .member { display: flex; }
+  .floor { position: absolute; left: 0; right: 0; bottom: 0; height: 60px; background: #2a7fd0; border-top: 6px solid var(--ink); }
+</style>

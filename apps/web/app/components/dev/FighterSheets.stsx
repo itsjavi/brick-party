@@ -1,0 +1,53 @@
+import type { FighterStats, SmashSpec } from "@brick/game";
+import { Bars, Traits } from "../games/doodle/DrawFighter.stsx";
+
+const WEAPON_LABEL: Record<SmashSpec["weapon"], string> = { blade: "Blade", blaster: "Blaster", fists: "Fists" };
+
+/**
+ * Doodle Smash's stat sheet: a copy of the private `SmashSheet` in `DoodleSmash.stsx`, so the dev pages don't touch the
+ * live game's screen. Keep the two alike.
+ */
+export function SmashSheet({ spec, compact = false }: { spec: SmashSpec; compact?: boolean }) {
+  const bars = [
+    { name: "Weight", value: (spec.weight - 0.8) / 0.85, text: spec.weight.toFixed(2) },
+    { name: "Speed", value: (spec.run - 9) / 9, text: String(spec.run) },
+    { name: "Jump", value: (spec.jump - 22) / 9, text: String(spec.jump) },
+    { name: "Reach", value: spec.weapon === "blaster" ? 1 : spec.reach / 110, text: spec.weapon === "blaster" ? "far" : String(spec.reach) },
+    { name: "Hit", value: (spec.damage - 4) / 11, text: `${spec.damage}%` },
+  ];
+  return (
+    <div className="smash-stats">
+      <Traits traits={[WEAPON_LABEL[spec.weapon], spec.weight >= 1.3 ? "Heavyweight" : spec.weight <= 0.95 ? "Featherweight" : "", spec.run >= 15 ? "Speedy" : "", spec.jump >= 28 ? "Bouncy" : ""]} />
+      <Bars bars={bars} compact={compact} />
+    </div>
+  );
+}
+
+const show = (v: unknown) => (typeof v === "number" ? String(Math.round(v * 100) / 100) : String(v));
+
+/** Every number a fighter's stats or spec hold, as a two-column table. */
+export function RawNumbers({ values, label }: { values: FighterStats | SmashSpec; label: string }) {
+  return (
+    <details className="raw">
+      <summary>{label}</summary>
+      <dl className="raw-list">
+        {Object.entries(values).map(([k, v]) => (
+          <div key={k} className="raw-row">
+            <dt>{k}</dt>
+            <dd>{show(v)}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
+<style>
+  .smash-stats { display: flex; flex-direction: column; gap: 8px; }
+  .raw { font-size: 13px; }
+  .raw summary { cursor: pointer; font-weight: 900; color: var(--muted); }
+  .raw-list { margin: 6px 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px 14px; }
+  .raw-row { display: flex; justify-content: space-between; gap: 8px; border-bottom: 2px dotted #cbd5e1; }
+  .raw-row dt { font-weight: 800; color: var(--muted); }
+  .raw-row dd { margin: 0; font-weight: 900; font-variant-numeric: tabular-nums; }
+</style>

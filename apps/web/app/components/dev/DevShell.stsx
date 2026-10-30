@@ -1,0 +1,83 @@
+import type { ReactNode } from "react";
+import { Link, useLocation } from "react-router";
+import type { IconName } from "../../lib/icons";
+import { AudioControls } from "../ui/AudioControls.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Stage } from "../ui/Stage.stsx";
+
+/** Every page under `/dev`: local development only, each a sandbox that needs no room or game. */
+export const DEV_PAGES = [
+  { to: "/dev/draw", name: "Draw", icon: "pencil", text: "The Skip Logic canvas and the fighter editor on their own, with import, export and random bot fighters." },
+  { to: "/dev/fighter", name: "Fighter", icon: "glove", text: "The character viewer: every animation, the rig, both games' stats, and a local Doodle Smash sandbox." },
+  { to: "/dev/components", name: "Components", icon: "brick", text: "The shared UI pieces and their variants: bricks, buttons, panels, timers, every game's HUD and rules." },
+  { to: "/dev/audio", name: "Audio", icon: "speaker", text: "Audition every music mood and sound effect." },
+] as const satisfies readonly { to: string; name: string; icon: IconName; text: string }[];
+
+/** The frame for the dev pages: a nav between them and the audio controls, over the usual sky. */
+export function DevShell({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
+  const { pathname } = useLocation();
+  return (
+    <Stage>
+      <header className="top">
+        <Link to="/dev" className="logo">
+          BRICK DEV
+        </Link>
+        <nav className="nav" aria-label="Dev pages">
+          {DEV_PAGES.map((p) => (
+            <Link key={p.to} to={p.to} className={pathname.startsWith(p.to) ? "tab on" : "tab"} aria-current={pathname.startsWith(p.to) ? "page" : undefined}>
+              <Icon name={p.icon} /> {p.name}
+            </Link>
+          ))}
+        </nav>
+        <AudioControls className="audio" />
+      </header>
+      <main className={wide ? "page wide" : "page"}>{children}</main>
+    </Stage>
+  );
+}
+
+<style>
+  .top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 16px 24px 0; }
+  .logo {
+    font-family: var(--font-display);
+    font-size: 26px;
+    color: var(--paper);
+    -webkit-text-stroke: 4px var(--ink);
+    paint-order: stroke fill;
+    text-shadow: 0 4px 0 var(--ink);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .nav { display: flex; flex-wrap: wrap; gap: 8px; flex-grow: 1; }
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 900;
+    font-size: 15px;
+    color: var(--ink);
+    text-decoration: none;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    box-shadow: 0 3px 0 var(--ink);
+    padding: 5px 12px;
+  }
+  .tab.on { background: var(--sun); translate: 0 -2px; }
+  .tab:active { translate: 0 2px; box-shadow: 0 1px 0 var(--ink); }
+  .page {
+    width: min(1100px, 100%);
+    margin: 0 auto;
+    padding: 20px 16px 56px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .page.wide { width: min(1400px, 100%); }
+
+  @media (width < 700px) {
+    .top { padding: 12px 16px 0; }
+    .logo { font-size: 22px; }
+    .audio { display: none; }
+  }
+</style>
