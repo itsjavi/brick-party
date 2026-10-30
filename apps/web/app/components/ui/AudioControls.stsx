@@ -1,0 +1,280 @@
+import { useEffect, useId, useRef, useState } from "react";
+import { playSfx, unlockAudio, useAudioSettings } from "../../lib/audio";
+
+/** Round speaker button that opens a small panel with music and sound-effect volumes and a mute switch. */
+export function AudioControls({ className }: { className?: string }) {
+  const [settings, update] = useAudioSettings();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+  const silent = settings.muted || (settings.music === 0 && settings.sfx === 0);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    const onPointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onPointer);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onPointer);
+    };
+  }, [open]);
+
+  return (
+    <div className={["audio", className ?? ""].join(" ")} ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={silent ? "round off" : "round"}
+        aria-label={silent ? "Sound settings (sound is off)" : "Sound settings"}
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => {
+          unlockAudio();
+          playSfx("click");
+          setOpen((o) => !o);
+        }}
+      >
+        <SpeakerIcon muted={silent} size={26} />
+      </button>
+      {open ? (
+        <div id={panelId} className="panel" role="dialog" aria-label="Sound settings">
+          <p className="title">Sound</p>
+          <VolumeSlider label="Music" value={settings.music} onChange={(music) => update({ music, muted: false })} />
+          <VolumeSlider
+            label="Sound effects"
+            value={settings.sfx}
+            onChange={(sfx) => update({ sfx, muted: false })}
+            onCommit={() => playSfx("pop")}
+          />
+          <button
+            type="button"
+            className={settings.muted ? "mute on" : "mute"}
+            aria-pressed={settings.muted}
+            onClick={() => {
+              if (settings.muted) {
+                update({ muted: false });
+                playSfx("pop");
+              } else {
+                update({ muted: true });
+              }
+            }}
+          >
+            <SpeakerIcon muted={settings.muted} size={20} />
+            {settings.muted ? "Sound is off" : "Mute everything"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** A compact mute toggle for tight spots (phone layouts, in-game HUD). */
+export function MuteButton({ className }: { className?: string }) {
+  const [settings, update] = useAudioSettings();
+  return (
+    <button
+      type="button"
+      className={["round small", settings.muted ? "off" : "", className ?? ""].join(" ")}
+      aria-label={settings.muted ? "Unmute sound" : "Mute sound"}
+      aria-pressed={settings.muted}
+      onClick={() => {
+        unlockAudio();
+        update({ muted: !settings.muted });
+        if (settings.muted) playSfx("pop");
+      }}
+    >
+      <SpeakerIcon muted={settings.muted} size={20} />
+    </button>
+  );
+}
+
+function VolumeSlider({
+  label,
+  value,
+  onChange,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  onCommit?: () => void;
+}) {
+  const id = useId();
+  const percent = Math.round(value * 100);
+  return (
+    <div className="row">
+      <label className="label" htmlFor={id}>
+        {label}
+        <span className="value">{percent}%</span>
+      </label>
+      <input
+        id={id}
+        className="range"
+        type="range"
+        min={0}
+        max={100}
+        step={5}
+        value={percent}
+        style={{ "--fill": `${percent}%` }}
+        onChange={(event) => onChange(Number(event.currentTarget.value) / 100)}
+        onPointerUp={onCommit}
+        onKeyUp={onCommit}
+      />
+    </div>
+  );
+}
+
+function SpeakerIcon({ muted, size }: { muted: boolean; size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M11 5 6 9H2v6h4l5 4V5z" />
+      {muted ? (
+        <path d="M16 9l6 6M22 9l-6 6" />
+      ) : (
+        <>
+          <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+          <path d="M19 5a10 10 0 0 1 0 14" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+<style>
+  .audio {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .round {
+    width: 56px;
+    height: 56px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink);
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 50%;
+    box-shadow: 0 5px 0 var(--ink);
+    cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.08s ease, background-color 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .round:hover { transform: translateY(-2px); box-shadow: 0 7px 0 var(--ink); }
+  .round:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+  .round.off { background: var(--mist); }
+  .round.small {
+    width: 44px;
+    height: 44px;
+    border-width: 3px;
+    box-shadow: 0 4px 0 var(--ink);
+  }
+
+  .panel {
+    position: absolute;
+    top: calc(100% + 14px);
+    right: 0;
+    z-index: 40;
+    width: 280px;
+    max-width: calc(100vw - 32px);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px 18px 18px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: 22px;
+    box-shadow: var(--lift);
+    animation: drop 0.16s ease-out;
+  }
+
+  .title {
+    font-family: var(--font-display);
+    font-size: 24px;
+    line-height: 1;
+  }
+
+  .row { display: flex; flex-direction: column; gap: 8px; }
+  .label {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 900;
+    font-size: 16px;
+  }
+  .value { color: var(--muted); font-weight: 800; }
+
+  .range {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 18px;
+    margin: 0;
+    background: linear-gradient(to right, var(--teal) var(--fill), var(--mist) var(--fill));
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 28px;
+    height: 28px;
+    background: var(--sun);
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+    box-shadow: 0 3px 0 var(--ink);
+  }
+  .range::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    background: var(--sun);
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+    box-shadow: 0 3px 0 var(--ink);
+  }
+  .range:focus-visible { outline: 4px solid var(--sun); outline-offset: 3px; }
+
+  .mute {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+    font-family: var(--font-body);
+    font-weight: 900;
+    font-size: 16px;
+    color: var(--ink);
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 14px;
+    box-shadow: 0 4px 0 var(--ink);
+    cursor: pointer;
+  }
+  .mute:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+  .mute.on { background: var(--coral); }
+
+  @keyframes drop {
+    from { opacity: 0; translate: 0 -6px; }
+    to { opacity: 1; translate: 0 0; }
+  }
+</style>

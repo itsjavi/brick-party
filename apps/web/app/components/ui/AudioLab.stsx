@@ -1,0 +1,142 @@
+import { useEffect, useRef, useState } from "react";
+import {
+  MUSIC_MOODS,
+  SFX_NAMES,
+  getMusicMood,
+  playSfx,
+  renderSfx,
+  setMusicMood,
+  soundPrint,
+  unlockAudio,
+  type MusicMood,
+  type SfxName,
+} from "../../lib/audio";
+import { AudioControls } from "./AudioControls.stsx";
+import { Button } from "./Button.stsx";
+
+/** The reaction buttons' sounds; "react" itself is the button press. */
+const REACTIONS = SFX_NAMES.filter((name) => name.startsWith("react") && name !== "react");
+
+/** Dev-only panel to audition every music mood and sound effect, with a print of each sound to compare by eye. */
+export function AudioLab() {
+  const [mood, setMood] = useState<MusicMood>(() => getMusicMood());
+  const [last, setLast] = useState<SfxName>("reactWow");
+  return (
+    <section className="lab" aria-label="Audio lab">
+      <header className="head">
+        <h2 className="title">Audio lab</h2>
+        <AudioControls />
+      </header>
+      <h3 className="sub">Music</h3>
+      <div className="grid">
+        {MUSIC_MOODS.map((m) => (
+          <Button
+            key={m}
+            size="sm"
+            tone={m === mood ? "teal" : "paper"}
+            quiet
+            aria-pressed={m === mood}
+            onClick={() => {
+              unlockAudio();
+              setMusicMood(m);
+              setMood(m);
+            }}
+          >
+            {m}
+          </Button>
+        ))}
+      </div>
+      <h3 className="sub">Sound effects</h3>
+      <div className="grid">
+        {SFX_NAMES.filter((name) => !REACTIONS.includes(name)).map((name) => (
+          <SfxButton key={name} name={name} onPlay={setLast} />
+        ))}
+      </div>
+      <figure className="print-big">
+        <Print name={last} />
+        <figcaption>
+          <b>{last}</b>: the last sound played, two seconds from left to right, 60 Hz to 12 kHz from bottom to top.
+        </figcaption>
+      </figure>
+      <h3 className="sub">Reactions</h3>
+      <p className="hint">Each should look as different as it sounds: wow climbs, boo sinks, lol bounces, +1 rings, bot bleeps, tomato splats.</p>
+      <div className="prints">
+        {REACTIONS.map((name) => (
+          <figure key={name} className="print">
+            <Print name={name} />
+            <SfxButton name={name} onPlay={setLast} />
+          </figure>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SfxButton({ name, onPlay }: { name: SfxName; onPlay: (name: SfxName) => void }) {
+  return (
+    <Button
+      size="sm"
+      quiet
+      onClick={() => {
+        unlockAudio();
+        playSfx(name);
+        onPlay(name);
+      }}
+    >
+      {name}
+    </Button>
+  );
+}
+
+/** A sound rendered offline and drawn as a spectrogram: dark is silence, sun-yellow is the loudest. */
+function Print({ name }: { name: SfxName }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    let live = true;
+    renderSfx(name).then((buffer) => {
+      const el = canvas.current;
+      if (!live || !el) return;
+      const { cells, rows } = soundPrint(buffer.getChannelData(0), buffer.sampleRate);
+      const ctx = el.getContext("2d")!;
+      el.width = cells.length;
+      el.height = rows;
+      const image = ctx.createImageData(cells.length, rows);
+      cells.forEach((column, x) => {
+        column.forEach((v, r) => {
+          const i = ((rows - 1 - r) * cells.length + x) * 4;
+          image.data.set([27 + v * 228, 31 + v * 173, 59 - v * 8, 255], i);
+        });
+      });
+      ctx.putImageData(image, 0, 0);
+    });
+    return () => {
+      live = false;
+    };
+  }, [name]);
+  return <canvas ref={canvas} className="print-canvas" aria-label={`Spectrogram of ${name}`} />;
+}
+
+<style>
+  .lab {
+    width: min(760px, calc(100vw - 32px));
+    margin: 32px auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 22px 24px 26px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--lift);
+  }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .title { font-family: var(--font-display); font-weight: 400; font-size: 32px; }
+  .sub { font-family: var(--font-display); font-weight: 400; font-size: 22px; }
+  .grid { display: flex; flex-wrap: wrap; gap: 12px; }
+  .hint { font-weight: 700; font-size: 14px; color: var(--muted); }
+  .prints { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 12px; }
+  .print, .print-big { margin: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .print-big figcaption { font-size: 13px; font-weight: 700; color: var(--muted); }
+  .print-canvas { width: 100%; height: 90px; image-rendering: pixelated; border: 3px solid var(--ink); border-radius: var(--radius-sm); background: var(--ink); }
+  .print-big .print-canvas { height: 140px; }
+</style>
