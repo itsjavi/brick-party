@@ -1,0 +1,23 @@
+{
+  "name": "@brick/db",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "prisma generate",
+    "test": "vitest run",
+    "typecheck": "tsc -p .",
+    "db:diff": "node scripts/new-migration.mjs"
+  },
+  "dependencies": {
+    "@brick/game": "workspace:*",
+    "@prisma/adapter-d1": "7.10.1",
+    "@prisma/client": "7.10.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261029.1",
+    "prisma": "7.10.1"
+  }
+}

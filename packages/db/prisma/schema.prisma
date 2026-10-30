@@ -1,0 +1,115 @@
+// Cloudflare D1 (SQLite) through @prisma/adapter-d1. Migrations are SQL files in
+// packages/db/migrations, applied with `wrangler d1 migrations apply`; see DEPLOY.md.
+generator client {
+  provider      = "prisma-client"
+  output        = "../generated"
+  moduleFormat  = "esm"
+  runtime       = "workerd"
+  // Smaller query compiler wasm: the Workers free plan caps the compressed bundle at 3 MB.
+  compilerBuild = "small"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+/// A nickname remembered across sessions. The recovery key restores it in another browser; only its hash is stored.
+model Player {
+  id         String        @id @default(uuid())
+  nickname   String
+  /// { color, hat, face, shape }, see `avatarSchema` in @brick/game. Older rows lack face and shape; the schema fills them in.
+  avatar     Json
+  keyHash    String        @unique @map("key_hash")
+  createdAt  DateTime      @default(now()) @map("created_at")
+  lastSeenAt DateTime      @default(now()) @map("last_seen_at")
+  matches    MatchPlayer[]
+  room       Room?
+
+  @@map("players")
+}
+
+/// A room code and the player who created it. It stays theirs while they keep using it (DECISION-13).
+model Room {
+  code       String   @id
+  owner      Player   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  /// Each player owns at most one code.
+  ownerId    String   @unique @map("owner_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  lastUsedAt DateTime @default(now()) @map("last_used_at")
+
+  @@index([lastUsedAt])
+  @@map("rooms")
+}
+
+model Match {
+  id        String        @id @default(uuid())
+  roomCode  String        @map("room_code")
+  /// GameId[]
+  playlist  Json
+  startedAt DateTime      @map("started_at")
+  endedAt   DateTime      @map("ended_at")
+  /// The full `MatchReport` from @brick/game, for the Retro Report page.
+  report    Json
+  players   MatchPlayer[]
+  games     GameResult[]
+
+  @@index([endedAt])
+  @@map("matches")
+}
+
+model MatchPlayer {
+  match    Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  matchId  String @map("match_id")
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  playerId String @map("player_id")
+  total    Int
+  rank     Int
+  /// Award ids
+  awards   Json
+
+  @@id([matchId, playerId])
+  @@index([playerId])
+  @@map("match_players")
+}
+
+model GameResult {
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  matchId String @map("match_id")
+  idx     Int
+  gameId  String @map("game_id")
+  points  Json
+  stats   Json
+
+  @@id([matchId, idx])
+  @@map("game_results")
+}
+
+/// Content served to games: Claude-generated cards (kept so they can be rated and not repeated),
+/// and pack cards, which get a row the first time they're served.
+model PromptCard {
+  id         String    @id
+  gameId     String    @map("game_id")
+  payload    Json
+  /// "ai" or "pack"
+  source     String
+  spice      String
+  createdAt  DateTime  @default(now()) @map("created_at")
+  lastUsedAt DateTime? @map("last_used_at")
+  upvotes    Int       @default(0)
+  downvotes  Int       @default(0)
+
+  @@index([gameId, source, createdAt])
+  @@index([gameId, lastUsedAt])
+  @@map("prompt_cards")
+}
+
+/// Estimated Claude spend per UTC day, for the daily budget (DECISION-12).
+model AiSpend {
+  /// YYYY-MM-DD in UTC.
+  day        String @id
+  calls      Int    @default(0)
+  /// Millionths of a US dollar.
+  costMicros Int    @default(0) @map("cost_micros")
+
+  @@map("ai_spend")
+}
