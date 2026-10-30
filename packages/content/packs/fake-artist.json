@@ -1,0 +1,1060 @@
+{
+  "words": [
+    {
+      "id": "fa-001",
+      "category": "Animals",
+      "word": "Giraffe",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-002",
+      "category": "Animals",
+      "word": "Elephant",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-003",
+      "category": "Animals",
+      "word": "Snail",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-004",
+      "category": "Animals",
+      "word": "Octopus",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-005",
+      "category": "Animals",
+      "word": "Penguin",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-006",
+      "category": "Animals",
+      "word": "Kangaroo",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-007",
+      "category": "Animals",
+      "word": "Crocodile",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-008",
+      "category": "Animals",
+      "word": "Owl",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-009",
+      "category": "Animals",
+      "word": "Spider",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-010",
+      "category": "Animals",
+      "word": "Shark",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-011",
+      "category": "Animals",
+      "word": "Camel",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-012",
+      "category": "Animals",
+      "word": "Turtle",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-013",
+      "category": "Animals",
+      "word": "Rabbit",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-014",
+      "category": "Animals",
+      "word": "Flamingo",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-015",
+      "category": "Animals",
+      "word": "Bee",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-016",
+      "category": "Animals",
+      "word": "Snake",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-017",
+      "category": "Animals",
+      "word": "Lion",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-018",
+      "category": "Animals",
+      "word": "Duck",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-019",
+      "category": "Animals",
+      "word": "Horse",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-020",
+      "category": "Animals",
+      "word": "Whale",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-021",
+      "category": "Food",
+      "word": "Pizza",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-022",
+      "category": "Food",
+      "word": "Banana",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-023",
+      "category": "Food",
+      "word": "Ice cream",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-024",
+      "category": "Food",
+      "word": "Hamburger",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-025",
+      "category": "Food",
+      "word": "Spaghetti",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-026",
+      "category": "Food",
+      "word": "Pineapple",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-027",
+      "category": "Food",
+      "word": "Carrot",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-028",
+      "category": "Food",
+      "word": "Cake",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-029",
+      "category": "Food",
+      "word": "Popcorn",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-030",
+      "category": "Food",
+      "word": "Egg",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-031",
+      "category": "Food",
+      "word": "Watermelon",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-032",
+      "category": "Food",
+      "word": "Sandwich",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-033",
+      "category": "Food",
+      "word": "Mushroom",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-034",
+      "category": "Food",
+      "word": "Lollipop",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-035",
+      "category": "Food",
+      "word": "Pretzel",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-036",
+      "category": "Food",
+      "word": "Corn",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-037",
+      "category": "Food",
+      "word": "Cookie",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-038",
+      "category": "Food",
+      "word": "Cheese",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-039",
+      "category": "At home",
+      "word": "Toilet",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-040",
+      "category": "At home",
+      "word": "Bathtub",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-041",
+      "category": "At home",
+      "word": "Lamp",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-042",
+      "category": "At home",
+      "word": "Sofa",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-043",
+      "category": "At home",
+      "word": "Clock",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-044",
+      "category": "At home",
+      "word": "Umbrella",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-045",
+      "category": "At home",
+      "word": "Toothbrush",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-046",
+      "category": "At home",
+      "word": "Ladder",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-047",
+      "category": "At home",
+      "word": "Mirror",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-048",
+      "category": "At home",
+      "word": "Bed",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-049",
+      "category": "At home",
+      "word": "Fridge",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-050",
+      "category": "At home",
+      "word": "Candle",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-051",
+      "category": "At home",
+      "word": "Key",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-052",
+      "category": "At home",
+      "word": "Window",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-053",
+      "category": "At home",
+      "word": "Stairs",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-054",
+      "category": "At home",
+      "word": "Scissors",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-055",
+      "category": "Sports",
+      "word": "Football",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-056",
+      "category": "Sports",
+      "word": "Tennis",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-057",
+      "category": "Sports",
+      "word": "Swimming",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-058",
+      "category": "Sports",
+      "word": "Skiing",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-059",
+      "category": "Sports",
+      "word": "Bowling",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-060",
+      "category": "Sports",
+      "word": "Surfing",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-061",
+      "category": "Sports",
+      "word": "Basketball",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-062",
+      "category": "Sports",
+      "word": "Boxing",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-063",
+      "category": "Sports",
+      "word": "Golf",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-064",
+      "category": "Sports",
+      "word": "Skateboard",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-065",
+      "category": "Sports",
+      "word": "Yoga",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-066",
+      "category": "Sports",
+      "word": "Fishing",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-067",
+      "category": "Vehicles",
+      "word": "Bicycle",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-068",
+      "category": "Vehicles",
+      "word": "Helicopter",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-069",
+      "category": "Vehicles",
+      "word": "Submarine",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-070",
+      "category": "Vehicles",
+      "word": "Rocket",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-071",
+      "category": "Vehicles",
+      "word": "Train",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-072",
+      "category": "Vehicles",
+      "word": "Tractor",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-073",
+      "category": "Vehicles",
+      "word": "Sailboat",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-074",
+      "category": "Vehicles",
+      "word": "Hot air balloon",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-075",
+      "category": "Vehicles",
+      "word": "Scooter",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-076",
+      "category": "Vehicles",
+      "word": "Ambulance",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-077",
+      "category": "Nature",
+      "word": "Volcano",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-078",
+      "category": "Nature",
+      "word": "Rainbow",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-079",
+      "category": "Nature",
+      "word": "Cactus",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-080",
+      "category": "Nature",
+      "word": "Mountain",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-081",
+      "category": "Nature",
+      "word": "Island",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-082",
+      "category": "Nature",
+      "word": "Waterfall",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-083",
+      "category": "Nature",
+      "word": "Tree",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-084",
+      "category": "Nature",
+      "word": "Moon",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-085",
+      "category": "Nature",
+      "word": "Cloud",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-086",
+      "category": "Nature",
+      "word": "Lightning",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-087",
+      "category": "Music",
+      "word": "Guitar",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-088",
+      "category": "Music",
+      "word": "Drum",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-089",
+      "category": "Music",
+      "word": "Piano",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-090",
+      "category": "Music",
+      "word": "Trumpet",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-091",
+      "category": "Music",
+      "word": "Violin",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-092",
+      "category": "Music",
+      "word": "Microphone",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-093",
+      "category": "Music",
+      "word": "Headphones",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-094",
+      "category": "Music",
+      "word": "Harp",
+      "spice": "spicy",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-095",
+      "category": "Jobs",
+      "word": "Firefighter",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-096",
+      "category": "Jobs",
+      "word": "Astronaut",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-097",
+      "category": "Jobs",
+      "word": "Chef",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-098",
+      "category": "Jobs",
+      "word": "Pilot",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-099",
+      "category": "Jobs",
+      "word": "Doctor",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-100",
+      "category": "Jobs",
+      "word": "Painter",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-101",
+      "category": "Jobs",
+      "word": "Farmer",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-102",
+      "category": "Jobs",
+      "word": "Magician",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-103",
+      "category": "Jobs",
+      "word": "Pirate",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-104",
+      "category": "Jobs",
+      "word": "Detective",
+      "spice": "spicy",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-105",
+      "category": "Office",
+      "word": "Laptop",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-106",
+      "category": "Office",
+      "word": "Stapler",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-107",
+      "category": "Office",
+      "word": "Coffee mug",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-108",
+      "category": "Office",
+      "word": "Desk chair",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-109",
+      "category": "Office",
+      "word": "Printer",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-110",
+      "category": "Office",
+      "word": "Calendar",
+      "spice": "spicy",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-111",
+      "category": "Office",
+      "word": "Whiteboard",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-112",
+      "category": "Office",
+      "word": "Paper plane",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-113",
+      "category": "Office",
+      "word": "Envelope",
+      "spice": "mild",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-114",
+      "category": "Office",
+      "word": "Light bulb",
+      "spice": "spicy",
+      "topic": "office",
+      "style": "observational"
+    },
+    {
+      "id": "fa-115",
+      "category": "Fantasy",
+      "word": "Dragon",
+      "spice": "mild",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-116",
+      "category": "Fantasy",
+      "word": "Unicorn",
+      "spice": "mild",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-117",
+      "category": "Fantasy",
+      "word": "Ghost",
+      "spice": "mild",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-118",
+      "category": "Fantasy",
+      "word": "Robot",
+      "spice": "mild",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-119",
+      "category": "Fantasy",
+      "word": "Alien",
+      "spice": "mild",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-120",
+      "category": "Fantasy",
+      "word": "Mermaid",
+      "spice": "spicy",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-121",
+      "category": "Fantasy",
+      "word": "Wizard",
+      "spice": "mild",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-122",
+      "category": "Fantasy",
+      "word": "Vampire",
+      "spice": "mild",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-123",
+      "category": "Fantasy",
+      "word": "Castle",
+      "spice": "mild",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-124",
+      "category": "Fantasy",
+      "word": "Treasure chest",
+      "spice": "mild",
+      "topic": "surreal",
+      "style": "absurd"
+    },
+    {
+      "id": "fa-125",
+      "category": "Clothing",
+      "word": "Hat",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-126",
+      "category": "Clothing",
+      "word": "Sock",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-127",
+      "category": "Clothing",
+      "word": "Glasses",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-128",
+      "category": "Clothing",
+      "word": "Tie",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-129",
+      "category": "Clothing",
+      "word": "Boot",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-130",
+      "category": "Clothing",
+      "word": "Crown",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-131",
+      "category": "Clothing",
+      "word": "Scarf",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    },
+    {
+      "id": "fa-132",
+      "category": "Clothing",
+      "word": "Backpack",
+      "spice": "mild",
+      "topic": "life",
+      "style": "observational"
+    }
+  ]
+}
