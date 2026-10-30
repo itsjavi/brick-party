@@ -1,0 +1,192 @@
+import { SMASH_LIVES, STAGES, type StageId } from "@brick/game";
+import { useEffect, useRef, useState } from "react";
+import type { FightClient } from "./netcode";
+import { SmashRenderer, type Contender, type FightFeed, type HudState } from "./renderer";
+import { damageColor } from "./scene";
+
+export interface ArenaProps {
+  client: FightClient;
+  stage: StageId;
+  contenders: Contender[];
+  /** Every fight update as it arrives, straight to the canvas. */
+  fights: FightFeed;
+  /** The viewer's fighter index, or -1. */
+  me: number;
+}
+
+/**
+ * The live fight: a canvas the `SmashRenderer` draws every animation frame, outside React, with a slim scoreboard over
+ * its top edge (who, damage %, lives; your charge and shield on your own chip) and the big words in the middle. Only
+ * those re-render, when they change, at most ten times a second.
+ */
+export function Arena({ client, stage, contenders, fights, me }: ArenaProps) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const renderer = useRef<SmashRenderer | null>(null);
+  const [hud, setHud] = useState<HudState | null>(null);
+
+  useEffect(() => {
+    const r = new SmashRenderer(canvas.current!, client, { stage, contenders, me }, setHud);
+    renderer.current = r;
+    const stop = fights((fight) => r.receive(fight));
+    r.start();
+    return () => {
+      stop();
+      r.destroy();
+      renderer.current = null;
+    };
+  }, [client, stage, me, fights]);
+
+  // The backquote key shows how the screen and the server keep up (frames, drawing time, update gaps).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "`") renderer.current?.togglePerf();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Drawings that arrive mid-fight.
+  useEffect(() => renderer.current?.setContenders(contenders), [contenders]);
+
+  // Chips keep their seat order so they don't jump around; the leader gets the crown.
+  const leader = hud?.cards[0] && !hud.cards[0].gone ? hud.cards[0].i : -1;
+  const chips = [...(hud?.cards ?? [])].sort((a, b) => a.i - b.i);
+
+  return (
+    <div className="screen">
+      <canvas ref={canvas} className="world" role="img" aria-label={`${STAGES[stage].name}: ${contenders.map((c) => c.name).join(", ")}`} />
+      <ol className="board" aria-label="Scoreboard">
+        {chips.map((card) => {
+          const c = contenders[card.i];
+          if (!c) return null;
+          const lead = card.i === leader;
+          return (
+            <li key={card.i} className={["chip", c.mine ? "mine" : "", card.gone ? "gone" : "", lead ? "lead" : ""].join(" ")} style={{ "--who": c.color }}>
+              {lead ? <Crown /> : null}
+              <span className="who">{c.mine ? "You" : c.name}</span>
+              <span className="pct" style={{ color: card.gone ? undefined : damageColor(card.dmg) }}>
+                {card.gone ? "OUT" : card.away ? "…" : `${card.dmg}%`}
+              </span>
+              <span className="lives" aria-label={`${card.lives} lives left`}>
+                {Array.from({ length: SMASH_LIVES }, (_, k) => (
+                  <span key={k} className={k < card.lives ? "life" : "life lost"} />
+                ))}
+              </span>
+              {c.mine && !card.gone ? (
+                <span className="meters" aria-hidden="true">
+                  <span className="meter" title="Charge: hold Space">
+                    <span className="fill charge" style={{ width: `${card.charge * 100}%` }} />
+                  </span>
+                  <span className="meter" title="Shield: B or Shift">
+                    <span className="fill shield" style={{ width: `${card.shield * 100}%` }} />
+                  </span>
+                </span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ol>
+      {hud && !hud.ready ? <span className="arena-wait">Get ready...</span> : null}
+      {hud?.banner ? (
+        <span key={hud.banner} className={hud.banner === "GO!" || hud.banner === "GAME!" ? "count go" : "count"}>
+          {hud.banner}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** The leader's crown, sitting on their chip. */
+function Crown() {
+  return (
+    <svg className="crown" viewBox="0 0 24 16" aria-label="Leading">
+      <path d="M2 14 L4 4 L9 9 L12 2 L15 9 L20 4 L22 14 Z" fill="#ffcc33" stroke="#1b1f3b" strokeWidth="2" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+<style>
+  .screen {
+    position: relative;
+    width: min(100%, (100dvh - 230px) * 1.76);
+    margin: 0 auto;
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    background: #fffdf5;
+    overflow: hidden;
+  }
+  .world { display: block; width: 100%; aspect-ratio: 1760 / 1000; touch-action: none; user-select: none; }
+
+  /* The scoreboard rides the top edge of the fight: nothing to scroll to, nothing in the way of the stage. */
+  .board {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    pointer-events: none;
+  }
+  .chip {
+    position: relative;
+    display: grid;
+    grid-template-columns: auto auto;
+    grid-template-areas: "who pct" "lives pct" "meters meters";
+    align-items: center;
+    gap: 0 8px;
+    min-width: 92px;
+    background: rgba(255, 255, 255, 0.88);
+    border: 3px solid var(--ink);
+    border-left: 8px solid var(--who);
+    border-radius: 12px;
+    padding: 3px 8px 4px 6px;
+  }
+  .chip.mine { background: #fff7d6; box-shadow: 0 0 0 3px var(--sun); }
+  .chip.lead { border-color: #b8860b; border-left-color: var(--who); }
+  .chip.gone { opacity: 0.5; }
+  .crown { position: absolute; top: -11px; left: 50%; translate: -50% 0; width: 22px; height: 15px; }
+  .who { grid-area: who; max-width: 9ch; font-weight: 900; font-size: 12px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pct { grid-area: pct; justify-self: end; font-family: var(--font-display); font-size: 26px; line-height: 1; white-space: nowrap; -webkit-text-stroke: 1.5px var(--ink); paint-order: stroke fill; }
+  .gone .pct { font-size: 16px; color: var(--muted); -webkit-text-stroke: 0; }
+  .lives { grid-area: lives; display: flex; gap: 3px; }
+  .life { width: 9px; height: 9px; border-radius: 50%; background: var(--who); border: 2px solid var(--ink); }
+  .life.lost { background: transparent; opacity: 0.35; }
+  .meters { grid-area: meters; display: flex; gap: 4px; margin-top: 3px; }
+  .meter { flex: 1; height: 5px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+  .fill { display: block; height: 100%; }
+  .fill.charge { background: #f59e0b; }
+  .fill.shield { background: #3b82f6; }
+
+  .arena-wait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 28px; }
+  .count {
+    position: absolute;
+    left: 50%;
+    top: 45%;
+    translate: -50% -50%;
+    font-family: var(--font-display);
+    font-size: clamp(56px, 11vw, 150px);
+    line-height: 1;
+    color: #ffcc33;
+    -webkit-text-stroke: 7px #1b1f3b;
+    paint-order: stroke fill;
+    pointer-events: none;
+    animation: slam 0.35s cubic-bezier(0.2, 1.8, 0.4, 1) both;
+  }
+  .count.go { color: #5fd068; }
+
+  @media (width < 640px) {
+    .board { top: 4px; left: 4px; right: 4px; gap: 4px; }
+    .chip { min-width: 70px; padding: 2px 5px 3px 4px; border-width: 2px; border-left-width: 6px; }
+    .who { font-size: 10px; max-width: 7ch; }
+    .pct { font-size: 18px; -webkit-text-stroke: 1px var(--ink); }
+    .life { width: 7px; height: 7px; border-width: 1.5px; }
+  }
+
+  @keyframes slam { from { opacity: 0; scale: 2.2; } }
+</style>

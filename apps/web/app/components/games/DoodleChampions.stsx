@@ -1,0 +1,503 @@
+import {
+  DUMMY_ID,
+  type DoodleChampionsView,
+  type DoodleFighterView,
+  type PlayerId,
+} from "@brick/game";
+import { useEffect, useRef, useState } from "react";
+import { playSfx, type SfxName } from "../../lib/audio";
+import { useChangeSfx } from "../../lib/use-phase-sfx";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { DrawFighter, StatSheet, useFigure } from "./doodle/DrawFighter.stsx";
+import { FightArena, FighterPreview } from "./doodle/FightArena.stsx";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+const PHASE_SFX: Partial<Record<DoodleChampionsView["phase"], SfxName>> = { weighin: "whoosh", bet: "pop", fight: "start", results: "reveal" };
+
+function banner(view: DoodleChampionsView, me: PlayerId | null): string {
+  switch (view.phase) {
+    case "draw":
+      if (me === null) return "The artists are drawing...";
+      return view.submittedIds.includes(me) ? "Your fighter is ready!" : "Draw your champion!";
+    case "weighin":
+      return "The weigh-in";
+    case "bet":
+      return view.myBet ? "Bet placed. Good luck!" : "Place your bets!";
+    case "fight":
+      return view.kind === "ffa" ? "Free-for-all!" : "Fight!";
+    case "results":
+      return view.kind === "ffa" ? "We have a champion!" : "Round over!";
+    case "done":
+      return "That's a wrap";
+  }
+}
+
+export function DoodleChampions({ view, me, players, matchScore, ai, act }: GameProps<DoodleChampionsView>) {
+  useMusic(view.phase === "draw" ? "think" : view.phase === "results" || view.phase === "done" ? "reveal" : view.phase === "fight" ? "battle" : "tension");
+  useChangeSfx(view.phase, (p) => PHASE_SFX[p as DoodleChampionsView["phase"]] ?? null);
+
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+  const playing = me !== null && players.some((p) => p.id === me);
+  const mine = view.fighters.find((f) => f.ownerId === me);
+
+  // The round's outcome for the viewer, as a sound: their fighter won or lost, their bet paid.
+  const resultKey = `${view.phase}:${view.round}`;
+  const heard = useRef(resultKey);
+  useEffect(() => {
+    if (heard.current === resultKey) return;
+    heard.current = resultKey;
+    if (view.phase !== "results" || !me) return;
+    const delta = view.roundPoints[me] ?? 0;
+    playSfx(delta > 0 ? "win" : delta < 0 ? "lose" : "point");
+  }, [resultKey]);
+
+  const round =
+    view.phase === "draw"
+      ? "Draw your fighter"
+      : view.phase === "weighin"
+        ? "Weigh-in"
+        : `Round ${view.round + 1} of ${view.totalRounds} · ${view.kind === "ffa" ? "Free-for-all" : "Duels"}`;
+
+  return (
+    <div className="dc">
+      <GameHud
+        gameId="doodle-champions"
+        round={round}
+        banner={banner(view, me)}
+        endsAt={view.phase === "done" || view.phase === "fight" ? null : view.endsAt}
+        ticks={(view.phase === "draw" && playing && !view.submittedIds.includes(me!)) || (view.phase === "bet" && playing && !view.myBet)}
+        score={matchScore + myPoints}
+      />
+      {view.phase === "draw" ? (
+        playing && !view.submittedIds.includes(me!) ? (
+          <DrawFighter endsAt={view.endsAt} onSubmit={(strokes) => act({ type: "fighter", strokes })} />
+        ) : (
+          <Waiting view={view} me={me} players={players} />
+        )
+      ) : null}
+      {view.phase === "weighin" ? <WeighIn view={view} me={me} players={players} ai={ai} /> : null}
+      {view.phase === "bet" ? <BetBoard view={view} me={me} playing={playing} players={players} act={act} /> : null}
+      {view.phase === "fight" || view.phase === "results" || view.phase === "done" ? (
+        <FightStage view={view} me={me} players={players} mine={mine} ai={ai} />
+      ) : null}
+    </div>
+  );
+}
+
+function Waiting({ view, me, players }: { view: DoodleChampionsView; me: PlayerId | null; players: Seat[] }) {
+  const fighter = useFigure(view.myDrawing);
+  return (
+    <div className="waiting">
+      {fighter ? (
+        <Panel className="sheet">
+          <h2 className="sheet-title">Your fighter is ready</h2>
+          <div className="sheet-preview">
+            <FighterPreview fighter={fighter} size={260} />
+          </div>
+          <StatSheet stats={fighter.stats} />
+        </Panel>
+      ) : null}
+      <Panel className="who-drew">
+        <p className="lead">{me && view.myDrawing ? "Warming up while the others finish..." : "The artists are drawing their fighters."}</p>
+        <ul className="seats">
+          {players.map((p) => {
+            const done = view.submittedIds.includes(p.id);
+            return (
+              <li key={p.id} className={done ? "seat done" : "seat"}>
+                <Brick avatar={p.avatar} size="sm" mood={done ? "happy" : "sleepy"} />
+                <span>{p.id === me ? "You" : p.name}</span>
+                <span className="seat-state">{done ? "✓ Ready" : "Drawing..."}</span>
+              </li>
+            );
+          })}
+        </ul>
+      </Panel>
+    </div>
+  );
+}
+
+/** A fighter's card: it walking in place, its name and owner, and its stats. */
+function FighterCard({
+  fighter,
+  players,
+  me,
+  odds,
+  picked,
+  onPick,
+  still,
+}: {
+  fighter: DoodleFighterView;
+  players: Seat[];
+  me: PlayerId | null;
+  odds?: number;
+  picked?: boolean;
+  onPick?: () => void;
+  still?: boolean;
+}) {
+  const owner = seatOf(players, fighter.ownerId);
+  const record = fighter.record.wins + fighter.record.losses + fighter.record.draws > 0 ? `${fighter.record.wins}-${fighter.record.losses}${fighter.record.draws ? `-${fighter.record.draws}` : ""}` : null;
+  const body = (
+    <>
+      <div className="card-art">
+        <FighterPreview fighter={fighter} size={170} still={still} />
+        {odds !== undefined ? <span className="odds">pays ×{odds}</span> : null}
+      </div>
+      <span className="card-name">{fighter.name}</span>
+      <span className="card-owner">
+        {owner ? <Brick avatar={owner.avatar} size="xs" /> : <Icon name="house" size={26} />}
+        {fighter.id === DUMMY_ID ? "The house" : fighter.ownerId === me ? "You" : (owner?.name ?? "?")}
+        {fighter.auto ? <span className="auto"> (drawn for them)</span> : null}
+        {record ? <span className="record">{record}</span> : null}
+      </span>
+      <StatSheet stats={fighter.stats} compact />
+    </>
+  );
+  const cls = ["fcard", picked ? "picked" : "", fighter.ownerId === me ? "mine" : "", onPick ? "pickable" : ""].join(" ");
+  return onPick ? (
+    <button type="button" className={cls} aria-pressed={picked} onClick={onPick}>
+      {body}
+    </button>
+  ) : (
+    <div className={cls}>{body}</div>
+  );
+}
+
+function WeighIn({ view, me, players, ai }: { view: DoodleChampionsView; me: PlayerId | null; players: Seat[]; ai: boolean }) {
+  return (
+    <div className="weighin">
+      <p className="lead center">
+        Meet the fighters! Their shapes made their stats.{ai && view.commentator === "claude" ? " Claude named them and calls the fights." : ""} Bets open next.
+      </p>
+      <div className="cards">
+        {view.fighters.map((f, i) => (
+          <div key={f.id} className="deal" style={{ animationDelay: `${i * 0.12}s` }}>
+            <FighterCard fighter={f} players={players} me={me} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BetBoard({
+  view,
+  me,
+  playing,
+  players,
+  act,
+}: {
+  view: DoodleChampionsView;
+  me: PlayerId | null;
+  playing: boolean;
+  players: Seat[];
+  act: (action: unknown) => void;
+}) {
+  const [pick, setPick] = useState<string | null>(view.myBet?.targetId ?? null);
+  useEffect(() => setPick(view.myBet?.targetId ?? null), [view.round]);
+  const fighter = (id: string) => view.fighters.find((f) => f.id === id)!;
+  const bet = (stake: number) => {
+    if (!pick) return;
+    playSfx("pop");
+    act({ type: "bet", targetId: pick, stake });
+  };
+  const ffa = view.kind === "ffa";
+  return (
+    <div className="bets">
+      <div className={ffa ? "matches ffa" : "matches"}>
+        {view.matches.map((m, i) => (
+          <div key={m.join("-")} className="match">
+            <span className="match-label">{ffa ? "Free-for-all: who's the last one standing?" : `Fight ${i + 1}`}</span>
+            <div className="match-row">
+              {m.map((id, k) => (
+                <div key={id} className="match-slot">
+                  {k > 0 && !ffa ? <span className="vs">VS</span> : null}
+                  <FighterCard
+                    fighter={fighter(id)}
+                    players={players}
+                    me={me}
+                    odds={view.odds[id]}
+                    picked={pick === id}
+                    onPick={playing ? () => setPick(id) : undefined}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <Panel className="slip">
+        {playing ? (
+          <>
+            <p className="lead">
+              {view.myBet ? (
+                <>
+                  Your bet: <b>{view.myBet.stake}</b> on <b>{fighter(view.myBet.targetId).name}</b>. Win: +{Math.round(view.myBet.stake * (view.odds[view.myBet.targetId] ?? 1))}, lose: −{view.myBet.stake}. You can change it until the bell.
+                </>
+              ) : pick ? (
+                <>
+                  Betting on <b>{fighter(pick).name}</b>, paying ×{view.odds[pick]}. How much?
+                </>
+              ) : (
+                "Pick a fighter you think will win, any fight, then a stake. Underdogs pay more."
+              )}
+            </p>
+            <div className="chips" role="group" aria-label="Stake">
+              {view.stakes.map((stake) => (
+                <button
+                  key={stake}
+                  type="button"
+                  className={view.myBet?.stake === stake && view.myBet.targetId === pick ? "chip on" : "chip"}
+                  disabled={!pick}
+                  onClick={() => bet(stake)}
+                >
+                  {stake}
+                  {pick ? <span className="chip-win">+{Math.round(stake * (view.odds[pick] ?? 1))}</span> : null}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="lead">The players are placing their bets.</p>
+        )}
+        <p className="tally">
+          Bets in: {view.bettedIds.length} / {players.length}
+        </p>
+      </Panel>
+    </div>
+  );
+}
+
+function FightStage({
+  view,
+  me,
+  players,
+  mine,
+  ai,
+}: {
+  view: DoodleChampionsView;
+  me: PlayerId | null;
+  players: Seat[];
+  mine: DoodleFighterView | undefined;
+  ai: boolean;
+}) {
+  const fights = view.fights ?? [];
+  const ffa = view.kind === "ffa";
+  const columns = ffa || fights.length <= 1 ? 1 : fights.length <= 4 ? 2 : 3;
+  const loudIndex = Math.max(
+    0,
+    fights.findIndex((f) => mine && f.fighters.includes(mine.id)) >= 0
+      ? fights.findIndex((f) => mine && f.fighters.includes(mine.id))
+      : fights.findIndex((f) => view.myBet && f.fighters.includes(view.myBet.targetId)),
+  );
+  const finished = view.phase !== "fight";
+  const name = (id: string) => view.fighters.find((f) => f.id === id)?.name ?? "?";
+  const owner = (id: PlayerId) => (id === me ? "You" : (seatOf(players, id)?.name ?? "?"));
+  const champion = ffa && finished ? view.fighters.find((f) => f.id === fights[0]?.placing[0]) : undefined;
+  return (
+    <div className="stage-wrap">
+      <div className="arenas" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+        {fights.map((f, i) => (
+          <FightArena
+            key={f.key}
+            fight={f}
+            fighters={view.fighters}
+            startedAt={view.startedAt}
+            finished={finished}
+            loud={i === loudIndex}
+            me={me}
+            label={ffa ? "The free-for-all" : `Fight ${i + 1}`}
+            tags={[
+              ...(mine && f.fighters.includes(mine.id) ? ["Your fighter"] : []),
+              ...(view.myBet && f.fighters.includes(view.myBet.targetId) ? ["Your bet"] : []),
+            ]}
+          />
+        ))}
+      </div>
+      {view.phase === "fight" ? (
+        <p className="tally center">
+          {view.myBet ? `Your bet: ${view.myBet.stake} on ${name(view.myBet.targetId)}.` : "No bet riding on this round."}
+          {ai && view.commentator === "claude" ? " Commentary by Claude." : ""}
+        </p>
+      ) : null}
+      {finished ? (
+        <div className="results">
+          {champion ? (
+            <Panel className="champ" tone="sun">
+              <span className="champ-kicker">Doodle Champion</span>
+              <FighterPreview fighter={champion} size={200} />
+              <span className="champ-name">{champion.name}</span>
+              <span className="champ-owner">{champion.ownerId ? `drawn by ${owner(champion.ownerId)}` : "the house wins?!"}</span>
+            </Panel>
+          ) : null}
+          <Panel className="feed">
+            <h3 className="feed-title">{ffa ? "Final standings" : "Results"}</h3>
+            <ul className="lines">
+              {fights.map((f) =>
+                ffa ? (
+                  f.placing.map((id, i) => (
+                    <li key={id}>
+                      <b>{i + 1}.</b> {name(id)}
+                    </li>
+                  ))
+                ) : (
+                  <li key={f.key}>
+                    {f.winnerId ? (
+                      <>
+                        <b>{name(f.winnerId)}</b> beat {name(f.fighters.find((id) => id !== f.winnerId)!)} {f.how === "ko" ? "by knockout" : "on points"}
+                      </>
+                    ) : (
+                      <>
+                        {f.fighters.map(name).join(" and ")} drew
+                      </>
+                    )}
+                  </li>
+                ),
+              )}
+            </ul>
+          </Panel>
+          <Panel className="feed">
+            <h3 className="feed-title">Bets and points</h3>
+            <ul className="lines">
+              {players.map((p) => {
+                const bet = view.bets?.[p.id];
+                const pts = view.roundPoints[p.id] ?? 0;
+                return (
+                  <li key={p.id} className="points-row">
+                    <Brick avatar={p.avatar} size="xs" mood={pts > 0 ? "happy" : pts < 0 ? "sad" : "sly"} />
+                    <span className="who">{owner(p.id)}</span>
+                    <span className="bet-note">{bet ? `${bet.stake} on ${name(bet.targetId)}: ${bet.delta > 0 ? "+" : ""}${bet.delta}` : "no bet"}</span>
+                    <span className={pts > 0 ? "pts up" : pts < 0 ? "pts down" : "pts"}>
+                      {pts > 0 ? "+" : ""}
+                      {pts}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </Panel>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+<style>
+  .dc { display: flex; flex-direction: column; gap: 14px; }
+  .lead { font-weight: 800; font-size: 15px; }
+  .center { text-align: center; }
+  .tally { font-weight: 900; color: var(--muted); }
+
+  .sheet { display: flex; flex-direction: column; gap: 10px; }
+  .sheet-title { font-family: var(--font-display); font-weight: 400; font-size: 24px; }
+  .sheet-preview { display: flex; justify-content: center; background: #f8fbff; border: 3px dashed #cbd5e1; border-radius: var(--radius-sm); padding: 6px; }
+
+  .waiting { display: flex; flex-wrap: wrap; gap: 18px; justify-content: center; align-items: flex-start; }
+  .waiting .sheet { width: min(100%, 340px); }
+  .who-drew { display: flex; flex-direction: column; gap: 10px; min-width: 260px; }
+  .seats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .seat { display: flex; align-items: center; gap: 10px; font-weight: 900; }
+  .seat-state { margin-left: auto; font-size: 13px; color: var(--muted); }
+  .seat.done .seat-state { color: var(--teal-ink); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+  .deal { animation: deal 0.45s cubic-bezier(0.2, 1.5, 0.4, 1) both; }
+  .fcard {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 8px 10px 10px;
+  }
+  .fcard.mine { background: #effdfb; }
+  .fcard.pickable { cursor: pointer; transition: translate 0.12s; }
+  .fcard.pickable:hover { translate: 0 -3px; }
+  .fcard.picked { box-shadow: 0 0 0 4px var(--sun), var(--lift-sm); background: #fff7d6; }
+  .card-art { position: relative; display: flex; justify-content: center; background: #f8fbff; border-radius: var(--radius-sm); }
+  .odds { position: absolute; top: 4px; right: 4px; font-weight: 900; font-size: 13px; background: var(--sun); border: 2px solid var(--ink); border-radius: 999px; padding: 0 8px; }
+  .card-name { font-family: var(--font-display); font-size: 19px; line-height: 1.1; }
+  .card-owner { display: flex; align-items: center; gap: 6px; font-weight: 800; font-size: 13px; color: var(--muted); }
+  .auto { font-weight: 700; }
+  .record { margin-left: auto; font-weight: 900; color: var(--ink); }
+
+  .bets { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+  .matches { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 14px; }
+  .matches.ffa { grid-template-columns: 1fr; }
+  .match { display: flex; flex-direction: column; gap: 6px; }
+  .match-label { font-family: var(--font-display); font-size: 18px; }
+  .match-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+  .match-slot { position: relative; display: flex; }
+  .vs {
+    position: absolute;
+    left: -22px;
+    top: 70px;
+    z-index: 1;
+    font-family: var(--font-display);
+    font-size: 22px;
+    color: var(--paper);
+    background: var(--coral);
+    border: 3px solid var(--ink);
+    border-radius: 50%;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .slip { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 12px; }
+  .chips { display: flex; gap: 8px; }
+  .chip {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    font: inherit;
+    font-family: var(--font-display);
+    font-size: 22px;
+    background: var(--paper);
+    border: 4px dashed var(--ink);
+    border-radius: 50%;
+    aspect-ratio: 1;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 4px 0 var(--ink);
+  }
+  .chip.on { background: var(--sun); border-style: solid; }
+  .chip:disabled { opacity: 0.4; cursor: not-allowed; }
+  .chip:active:not(:disabled) { translate: 0 3px; box-shadow: 0 1px 0 var(--ink); }
+  .chip-win { font-family: var(--font-body); font-weight: 900; font-size: 12px; color: var(--teal-ink); }
+
+  .stage-wrap { display: flex; flex-direction: column; gap: 14px; }
+  .arenas { display: grid; gap: 12px; }
+  .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; align-items: start; }
+  .champ { display: flex; flex-direction: column; align-items: center; gap: 4px; animation: deal 0.6s cubic-bezier(0.2, 1.6, 0.4, 1) both; }
+  .champ-kicker { font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; font-size: 13px; }
+  .champ-name { font-family: var(--font-display); font-size: 28px; text-align: center; }
+  .champ-owner { font-weight: 800; }
+  .feed { display: flex; flex-direction: column; gap: 8px; }
+  .feed-title { font-family: var(--font-display); font-weight: 400; font-size: 20px; }
+  .lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-weight: 800; }
+  .points-row { display: flex; align-items: center; gap: 8px; }
+  .who { font-weight: 900; }
+  .bet-note { flex-grow: 1; font-size: 13px; color: var(--muted); }
+  .pts { font-weight: 900; }
+  .pts.up { color: var(--teal-ink); }
+  .pts.down { color: var(--coral-ink); }
+
+  @keyframes deal { from { opacity: 0; translate: 0 30px; rotate: -4deg; } }
+
+  @media (width < 900px) {
+    .bets { grid-template-columns: minmax(0, 1fr); }
+    .matches { grid-template-columns: 1fr; }
+    .arenas { grid-template-columns: minmax(0, 1fr) !important; }
+  }
+</style>

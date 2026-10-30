@@ -1,0 +1,259 @@
+import {
+  ACT,
+  FLOOR_SCALE,
+  TICK_MS,
+  paintOrder,
+  withNames,
+  type DoodleFightView,
+  type DoodleFighterView,
+  type PlayerId,
+  type Stroke,
+} from "@brick/game";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Icon } from "../../ui/Icon.stsx";
+import { strokeSvgProps } from "../skip-logic/paths";
+import { poseAt, type Moment, type Posable, type Pose } from "./pose";
+import { RING, RingRenderer, type RingStatus } from "./ringRenderer";
+
+export interface FigureSource extends Posable {
+  strokes: Stroke[];
+}
+
+/** A fighter's strokes split into the parts that move: legs behind, then the body, then arms with what they hold. */
+function useParts(fighter: FigureSource) {
+  return useMemo(() => {
+    const { rig, strokes } = fighter;
+    const props = strokes.map(strokeSvgProps);
+    const draw = (indexes: number[]) =>
+      paintOrder(indexes.map((i) => ({ i, k: strokes[i]!.k }))).map(({ i }) => <path key={i} {...props[i]} />);
+    const used = new Set([...rig.limbs.flatMap((l) => l.strokes), ...(rig.weapon?.strokes ?? [])]);
+    const body = strokes.flatMap((_, i) => (used.has(i) ? [] : [i]));
+    return {
+      body: draw(body),
+      limbs: rig.limbs.map((limb) => draw(limb.strokes)),
+      weapon: rig.weapon ? draw(rig.weapon.strokes) : null,
+    };
+  }, [fighter.strokes, fighter.rig]);
+}
+
+/**
+ * One fighter drawn as SVG from its own strokes and posed, for the cards, the previews and the /dev viewer; fights draw
+ * on a canvas instead (`canvasFighter.ts`, the same transforms): placed on the floor at `x`, `y` floor units, turned to `face`,
+ * each limb rotated around the point where it joins the body.
+ */
+export const FighterFigure = memo(function FighterFigure({
+  fighter,
+  pose,
+  x,
+  y,
+  face,
+  floor,
+  scale = FLOOR_SCALE,
+}: {
+  fighter: FigureSource;
+  pose: Pose;
+  x: number;
+  y: number;
+  face: 1 | -1;
+  floor: number;
+  scale?: number;
+}) {
+  const parts = useParts(fighter);
+  const { rig } = fighter;
+  const [cx] = rig.center;
+  const feet = rig.feet;
+  const flip = face * (rig.facesRight ? 1 : -1);
+  const pivot = pose.aroundFeet ? `${cx} ${feet}` : `${rig.center[0]} ${rig.center[1]}`;
+  const limb = (i: number, content: ReactNode, extra?: ReactNode) => {
+    const l = rig.limbs[i]!;
+    return (
+      <g key={i} transform={`rotate(${pose.limbs[i] ?? 0} ${l.pivot[0]} ${l.pivot[1]})`}>
+        {content}
+        {extra}
+      </g>
+    );
+  };
+  const held = rig.weapon?.arm ?? null;
+  return (
+    <g
+      transform={`translate(${x} ${floor - y - pose.lift}) scale(${flip * scale} ${scale}) translate(${-cx} ${-feet})`}
+      opacity={pose.opacity}
+      style={pose.flash ? { filter: `brightness(${1 + pose.flash * 1.4}) saturate(${1 - pose.flash * 0.6})` } : undefined}
+    >
+      <g
+        transform={`translate(${pose.jitter} ${pose.bob}) rotate(${pose.body} ${pivot}) translate(${cx} ${feet}) scale(${1 / pose.squash} ${pose.squash}) skewX(${pose.skew}) translate(${-cx} ${-feet})`}
+      >
+        {rig.limbs.map((l, i) => (l.part === "legs" ? limb(i, parts.limbs[i]) : null))}
+        {parts.body}
+        {rig.weapon && held === null ? (
+          <g transform={`rotate(${pose.weapon} ${rig.weapon.pivot[0]} ${rig.weapon.pivot[1]})`}>{parts.weapon}</g>
+        ) : null}
+        {rig.limbs.map((l, i) => (l.part === "arms" ? limb(i, parts.limbs[i], held === i ? parts.weapon : null) : null))}
+      </g>
+    </g>
+  );
+});
+
+/** A fighter walking in place, swinging now and then: the live preview while drawing, and the cards. */
+export function FighterPreview({ fighter, size = 220, still = false }: { fighter: FigureSource; size?: number; still?: boolean }) {
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    if (still) return;
+    const start = performance.now();
+    let frame = 0;
+    let last = 0;
+    const loop = (now: number) => {
+      if (now - last > 40) {
+        last = now;
+        setT((now - start) / TICK_MS);
+      }
+      frame = requestAnimationFrame(loop);
+    };
+    frame = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(frame);
+  }, [still]);
+  const [x0, y0, x1] = fighter.rig.box;
+  const span = Math.max(200, x1 - x0, fighter.rig.feet - y0);
+  const scale = 300 / span;
+  // Walks for a while, then stops and swings: the stats' cooldown sets the rhythm.
+  const cycle = 40;
+  const at = t % cycle;
+  const walking = at < 24;
+  const swingEvery = Math.max(4, fighter.stats.cooldown);
+  const moment: Moment = {
+    x: 200,
+    y: 0,
+    act: walking ? ACT.move : at % swingEvery < 1 ? ACT.attack : ACT.idle,
+    face: 1,
+    dist: Math.floor(t / cycle) * 24 * fighter.stats.speed + Math.min(at, 24) * fighter.stats.speed,
+    t,
+    sinceAttack: walking ? Infinity : (at - 24) % swingEvery,
+    sinceHurt: Infinity,
+    sinceKo: -Infinity,
+  };
+  const pose = poseAt(fighter, still ? { ...moment, act: ACT.idle, t: 0, sinceAttack: Infinity } : moment);
+  // Centers the whole drawing, not just its body.
+  const shift = 200 + (fighter.rig.center[0] - (x0 + x1) / 2) * scale * (fighter.rig.facesRight ? 1 : -1);
+  return (
+    <svg className="preview" viewBox="0 0 400 380" width={size} height={(size * 380) / 400} aria-hidden="true">
+      <ellipse cx="200" cy="350" rx="150" ry="14" fill="rgba(27, 31, 59, 0.12)" />
+      <FighterFigure fighter={fighter} pose={pose} x={shift} y={0} face={1} floor={348} scale={scale} />
+    </svg>
+  );
+}
+
+export interface ArenaProps {
+  fight: DoodleFightView;
+  fighters: DoodleFighterView[];
+  startedAt: number;
+  /** The fight is over: show its last frame and the winner. */
+  finished: boolean;
+  /** The arena that plays sounds: the viewer's own fight, or the one they bet on. */
+  loud: boolean;
+  me: PlayerId | null;
+  label: string;
+  tags: string[];
+}
+
+/**
+ * One fight replayed from its frames, side view, on a canvas a `RingRenderer` draws every animation frame outside
+ * React: hit flashes, shakes, knockouts. Around it, the health bars and the commentary, which React redraws only when
+ * they change.
+ */
+export function FightArena({ fight, fighters, startedAt, finished, loud, me, label, tags }: ArenaProps) {
+  const ffa = fight.fighters.length > 2;
+  const { height } = ffa ? RING.ffa : RING.duel;
+  const cast = useMemo(() => fight.fighters.map((id) => fighters.find((f) => f.id === id)!), [fight.fighters, fighters]);
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const [status, setStatus] = useState<RingStatus | null>(null);
+  // The fight's frames and drawings don't change once it's set; new views only bring new copies of them.
+  const latest = useRef({ fight, cast });
+  latest.current = { fight, cast };
+
+  useEffect(() => {
+    const ring = new RingRenderer(canvas.current!, { ...latest.current, startedAt, finished, loud, shake: box.current!, onStatus: setStatus });
+    ring.start();
+    return () => ring.destroy();
+  }, [fight.key, startedAt, finished, loud]);
+
+  const names = fighters.map((f) => f.name);
+  const caption = status && status.caption >= 0 ? fight.captions[status.caption] : undefined;
+  const winner = fight.winnerId;
+  return (
+    <figure className={["ring", loud ? "loud" : "", ffa ? "ffa" : ""].join(" ")}>
+      <figcaption className="ring-head">
+        <span className="ring-label">{label}</span>
+        {tags.map((tag) => (
+          <span key={tag} className="ring-tag">
+            {tag}
+          </span>
+        ))}
+      </figcaption>
+      <div className={ffa ? "bars many" : "bars"}>
+        {cast.map((f, i) => {
+          const hp = status?.hp[i] ?? f.stats.hp;
+          const share = Math.max(0, hp / f.stats.hp);
+          return (
+            <div key={f.id} className={["bar", !ffa && i === 1 ? "right" : "", f.ownerId === me ? "mine" : ""].join(" ")}>
+              <span className="bar-name">
+                {f.name} {status?.over && winner === f.id ? <Icon name="crown" label="Winner" /> : null}
+              </span>
+              <span className="bar-track">
+                <span className={share < 0.3 ? "bar-fill low" : "bar-fill"} style={{ width: `${share * 100}%` }} />
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <div ref={box} className="stage-box">
+        <canvas
+          ref={canvas}
+          className="stage"
+          style={{ aspectRatio: `${fight.width} / ${height}` }}
+          role="img"
+          aria-label={`${cast.map((f) => f.name).join(" versus ")}`}
+        />
+      </div>
+      <p className={caption ? "call" : "call quiet"} key={caption?.t ?? -1}>
+        <Icon name="mic" /> {caption ? withNames(caption.text, names) : "..."}
+      </p>
+    </figure>
+  );
+}
+
+<style>
+  .preview { display: block; overflow: visible; }
+  .ring {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 8px;
+    min-width: 0;
+  }
+  .ring.loud { box-shadow: 0 0 0 4px var(--sun), var(--lift-sm); }
+  .ring-head { display: flex; align-items: center; gap: 6px; font-weight: 900; font-size: 13px; }
+  .ring-label { font-family: var(--font-display); font-size: 16px; }
+  .ring-tag { background: var(--sun); border: 2px solid var(--ink); border-radius: 999px; padding: 0 8px; font-size: 12px; }
+  .bars { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .bars.many { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 4px 10px; }
+  .bar { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .bar.right { align-items: flex-end; }
+  .bar-name { font-weight: 900; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .bar.mine .bar-name { color: var(--teal-ink); }
+  .bar-track { width: 100%; height: 12px; background: #e2e8f0; border: 2px solid var(--ink); border-radius: 999px; overflow: hidden; display: flex; }
+  .bar.right .bar-track { justify-content: flex-end; }
+  .bar-fill { display: block; height: 100%; background: var(--lime); transition: width 0.25s ease-out; }
+  .bar-fill.low { background: var(--coral); }
+  .stage-box { border: 3px solid var(--ink); border-radius: 12px; overflow: hidden; background: #bfe9ff; }
+  .stage { display: block; width: 100%; }
+  .call { font-weight: 900; font-size: 15px; min-height: 22px; animation: pop-in 0.3s ease-out; }
+  .call.quiet { color: var(--muted); }
+
+  @keyframes pop-in { from { opacity: 0; translate: 0 6px; } }
+</style>

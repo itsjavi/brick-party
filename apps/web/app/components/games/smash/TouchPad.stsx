@@ -1,0 +1,88 @@
+import { KEY } from "@brick/game";
+import { useRef, type PointerEvent, type ReactNode } from "react";
+import { Icon } from "../../ui/Icon.stsx";
+import { pressButton, type KeyState } from "./controls";
+
+const BUTTONS: { id: string; key: number | "attack"; label: ReactNode; area: string; aria: string }[] = [
+  { id: "up", key: KEY.up, label: "▲", area: "up", aria: "Jump" },
+  { id: "left", key: KEY.left, label: "◀", area: "left", aria: "Left" },
+  { id: "right", key: KEY.right, label: "▶", area: "right", aria: "Right" },
+  { id: "down", key: KEY.down, label: "▼", area: "down", aria: "Down" },
+  { id: "shield", key: KEY.shield, label: <Icon name="shield" size={30} />, area: "shield", aria: "Shield" },
+  { id: "attack", key: "attack", label: <Icon name="burst" size={34} />, area: "attack", aria: "Attack (hold to charge)" },
+];
+
+/**
+ * On-screen buttons for phones and tablets: a d-pad on the left, attack and shield on the right. Each button presses
+ * its key for as long as a finger is on it, and several can be held at once.
+ */
+export function TouchPad({ keys }: { keys: KeyState }) {
+  const fingers = useRef(new Map<string, Set<number>>());
+  const press = (id: string, key: number | "attack", pointer: number, down: boolean) => {
+    const on = fingers.current.get(id) ?? new Set<number>();
+    if (down) on.add(pointer);
+    else on.delete(pointer);
+    fingers.current.set(id, on);
+    pressButton(keys, id, key, on.size > 0);
+  };
+  return (
+    <div className="pad" aria-label="Fight controls">
+      {BUTTONS.map((b) => {
+        const down = (event: PointerEvent<HTMLButtonElement>) => {
+          event.preventDefault();
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          press(b.id, b.key, event.pointerId, true);
+        };
+        const up = (event: PointerEvent<HTMLButtonElement>) => press(b.id, b.key, event.pointerId, false);
+        return (
+          <button
+            key={b.id}
+            type="button"
+            className={`pad-btn ${b.area}`}
+            aria-label={b.aria}
+            onPointerDown={down}
+            onPointerUp={up}
+            onPointerCancel={up}
+            onLostPointerCapture={up}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            {b.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+<style>
+  .pad {
+    display: grid;
+    grid-template-columns: 64px 64px 64px 1fr 76px 90px;
+    grid-template-rows: 56px 56px;
+    grid-template-areas:
+      ". up . . shield attack"
+      "left down right . shield attack";
+    gap: 6px;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .pad-btn {
+    font: inherit;
+    font-size: 24px;
+    font-weight: 900;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 0 var(--ink);
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .pad-btn:active { translate: 0 3px; box-shadow: 0 1px 0 var(--ink); background: var(--sun); }
+  .up { grid-area: up; }
+  .left { grid-area: left; }
+  .right { grid-area: right; }
+  .down { grid-area: down; }
+  .shield { grid-area: shield; background: #dbeafe; }
+  .attack { grid-area: attack; background: var(--coral); font-size: 34px; border-radius: 50%; }
+</style>

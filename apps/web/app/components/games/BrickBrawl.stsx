@@ -1,0 +1,494 @@
+import type { BrawlBrick, BrawlEvent, BrawlMove, BrickBrawlView, PlayerId } from "@brick/game";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { playSfx } from "../../lib/audio";
+import type { IconName } from "../../lib/icons";
+import { useChangeSfx } from "../../lib/use-phase-sfx";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Button } from "../ui/Button.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { ARROWS, DIRS, needsDir, threats, type Dir, type MoveType } from "./brawl/logic";
+import { BrawlRenderer, type ArenaInput } from "./brawl/renderer";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+const KEYS: Record<string, Dir> = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
+const TUTORIAL_KEY = "brickparty:brawl-tutorial";
+
+/** Every move, what it does for you, and how it touches everyone else. */
+const MOVES: { type: MoveType; icon: IconName; name: string; what: string; others: string; key: string }[] = [
+  { type: "step", icon: "steps", name: "Step", what: "Move 1 tile.", others: "Two bricks heading for the same tile bounce back.", key: "Arrow" },
+  { type: "dash", icon: "dash", name: "Dash", what: "Move 2 tiles in a line.", others: "Run into a brick and you ram it 1 tile, then stop.", key: "Shift+Arrow" },
+  { type: "shove", icon: "fist", name: "Shove", what: "Push the brick next to you 2 tiles.", others: "Lands after everyone moves. Off the edge: +150.", key: "Alt+Arrow" },
+  { type: "block", icon: "shield", name: "Block", what: "Stay put and brace.", others: "Nothing can push or daze you this turn.", key: "Space" },
+  { type: "stay", icon: "hand", name: "Stay", what: "Do nothing.", others: "You can still be shoved or rammed.", key: "" },
+];
+
+function describe(move: BrawlMove): ReactNode {
+  const m = MOVES.find((x) => x.type === move.type)!;
+  return (
+    <>
+      <Icon name={m.icon} /> {"dir" in move ? `${m.name} ${ARROWS[move.dir]}` : m.name}
+    </>
+  );
+}
+
+function banner(view: BrickBrawlView, me: PlayerId | null, players: Seat[]): string {
+  const mine = view.bricks.find((b) => b.id === me);
+  switch (view.phase) {
+    case "plan":
+      if (!mine) return "Watching this brawl";
+      if (mine.outAt !== null) return view.myDrop ? "Brick incoming..." : "You're out. Drop a brick!";
+      if (mine.dazed) return "Dazed! You sit this one out";
+      return view.myMove ? "Locked in. Waiting..." : view.crumbles ? "The edge is crumbling!" : "Pick your move!";
+    case "replay":
+      return view.events.some((e) => e.kind === "fall") ? "Off the edge!" : view.events.some((e) => e.kind === "shove" || e.kind === "ram") ? "Crash!" : "Shuffle shuffle...";
+    case "results": {
+      const standing = view.bricks.filter((b) => b.outAt === null);
+      const first = seatOf(players, view.placing?.[0]);
+      const who = first ? (first.id === me ? "You" : first.name) : "Someone";
+      if (standing.length === 1) return `${who} survived!`;
+      return standing.length ? "Still standing: a draw!" : `${who} lasted longest!`;
+    }
+    case "done":
+      return "That's a wrap";
+  }
+}
+
+/** One line per event that matters, in plain words. */
+function eventLine(e: BrawlEvent, name: (id: PlayerId) => string): string | null {
+  switch (e.kind) {
+    case "fall":
+      return e.by.length ? `${e.by.map(name).join(" & ")} knocked ${name(e.id)} off! +150` : `${name(e.id)} fell off the edge.`;
+    case "shove":
+      return `${name(e.by)} shoved ${name(e.id)}.`;
+    case "ram":
+      return `${name(e.by)} rammed into ${name(e.id)}.`;
+    case "block":
+      return `${name(e.id)} blocked.`;
+    case "bump":
+      return `${name(e.id)} bounced off.`;
+    case "drop":
+      return e.hit ? `${name(e.by)} dropped a brick on ${name(e.hit)}. Dazed!` : `${name(e.by)}'s brick missed.`;
+    case "shrink":
+      return "The edge crumbled away.";
+    default:
+      return null;
+  }
+}
+
+/** What happened to the viewer this turn, said to them. */
+function myStory(events: BrawlEvent[], me: PlayerId, name: (id: PlayerId) => string): string | null {
+  for (const e of events) {
+    if (e.kind === "fall" && e.id === me) return e.by.length ? `${e.by.map(name).join(" & ")} knocked you off!` : "You fell off the edge.";
+  }
+  const lines: string[] = [];
+  const kos = events.filter((e) => e.kind === "fall" && e.by.includes(me));
+  if (kos.length) lines.push(`You knocked ${kos.map((e) => name((e as { id: PlayerId }).id)).join(" and ")} off! +${150 * kos.length}`);
+  for (const e of events) {
+    if ((e.kind === "shove" || e.kind === "ram") && e.id === me) lines.push(`${name(e.by)} ${e.kind === "shove" ? "shoved" : "rammed"} you.`);
+    if (e.kind === "drop" && e.hit === me) lines.push(`${name(e.by)} dropped a brick on you: dazed next turn.`);
+    if (e.kind === "bump" && e.id === me) lines.push("You bounced off another brick.");
+  }
+  return lines.length ? lines.join(" ") : null;
+}
+
+export function BrickBrawl({ view, me, players, matchScore, act }: GameProps<BrickBrawlView>) {
+  useMusic(view.phase === "results" || view.phase === "done" ? "reveal" : "battle");
+  useChangeSfx(view.phase, (p) => (p === "results" ? "reveal" : null));
+
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+  const mine = view.bricks.find((b) => b.id === me);
+  const canMove = view.phase === "plan" && !!mine && mine.outAt === null && !mine.dazed;
+  const canDrop = view.phase === "plan" && !!mine && mine.outAt !== null;
+  const name = (id: PlayerId) => (id === me ? "You" : (seatOf(players, id)?.name ?? "?"));
+
+  const [picked, setPicked] = useState<MoveType>("step");
+  /** The arena canvas draws itself; React only hands it each new view (see brawl/renderer.ts). */
+  const arena = useRef<BrawlRenderer | null>(null);
+  /** The replay beat showing, from the renderer: a few updates a turn, for the turn order strip and the story. */
+  const [stage, setStage] = useState<number | null>(null);
+  /** Previews a move card or arrow under the pointer: ghosts for a move, target tiles for a move type. */
+  const hoverCard = (move: BrawlMove | null, type: MoveType | null = null) => arena.current?.hoverCard(move, type);
+
+  const [tutorial, setTutorial] = useState(false);
+  useEffect(() => {
+    if (!canMove || view.round > 0 || view.turn > 0) return;
+    try {
+      if (!localStorage.getItem(TUTORIAL_KEY)) setTutorial(true);
+    } catch {
+      setTutorial(true);
+    }
+  }, [canMove, view.round, view.turn]);
+  const closeTutorial = () => {
+    setTutorial(false);
+    try {
+      localStorage.setItem(TUTORIAL_KEY, "seen");
+    } catch {
+      // Private windows can't store it; the walkthrough just shows again next time.
+    }
+  };
+
+  const danger = mine && mine.outAt === null && view.phase === "plan" ? threats(view, mine) : [];
+
+  const send = (move: BrawlMove) => {
+    if (!canMove) return;
+    playSfx("pop");
+    setPicked(move.type);
+    act(move);
+  };
+
+  // Arrow keys step; Shift dashes; Alt (Option) shoves; Space blocks.
+  useEffect(() => {
+    if (!canMove) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const dir = KEYS[e.key];
+      if (dir) {
+        e.preventDefault();
+        send({ type: e.shiftKey ? "dash" : e.altKey ? "shove" : "step", dir });
+      } else if (e.key === " ") {
+        e.preventDefault();
+        send({ type: "block" });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const replayStage = view.phase === "replay" ? (stage ?? -1) : null;
+  const story = replayStage !== null && me && replayStage >= 3 ? myStory(view.events, me, name) : null;
+
+  return (
+    <div className="bb">
+      <GameHud
+        gameId="brick-brawl"
+        round={`Round ${view.round + 1} of ${view.totalRounds} · Turn ${view.turn + 1}`}
+        banner={banner(view, me, players)}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={canMove && !view.myMove}
+        score={matchScore + myPoints}
+      />
+      <TurnOrder stage={replayStage ?? (view.phase === "plan" ? -1 : 4)} crumbles={view.crumbles} />
+      <div className="layout">
+        <Arena
+          renderer={arena}
+          view={view}
+          me={me}
+          players={players}
+          picked={picked}
+          canMove={canMove}
+          canDrop={canDrop}
+          onMove={send}
+          onDrop={(x, y) => {
+            playSfx("pop");
+            act({ type: "drop", x, y });
+          }}
+          onStage={setStage}
+        />
+        <div className="side">
+          {canMove ? (
+            <Panel className="controls">
+              {danger.length ? (
+                <p className="alert">
+                  <Icon name="warning" /> {danger.map(name).join(" and ")} {danger.length > 1 ? "are" : "is"} right next to you: one shove sends you off the edge. Block, or move away.
+                </p>
+              ) : null}
+              <div className="cards" role="radiogroup" aria-label="Your move">
+                {MOVES.map((m) => {
+                  const chosen = view.myMove?.type === m.type;
+                  const open = picked === m.type && needsDir(m.type);
+                  return (
+                    <div key={m.type} className={["card", open || (!needsDir(m.type) && chosen) ? "open" : "", chosen ? "chosen" : ""].join(" ")}>
+                      <button
+                        type="button"
+                        className="card-head"
+                        role="radio"
+                        aria-checked={picked === m.type}
+                        onClick={() => (needsDir(m.type) ? setPicked(m.type) : send({ type: m.type } as BrawlMove))}
+                        onPointerEnter={() => (needsDir(m.type) ? hoverCard(null, m.type) : hoverCard({ type: m.type } as BrawlMove))}
+                        onPointerLeave={() => hoverCard(null)}
+                      >
+                        <span className="card-icon">
+                          <Icon name={m.icon} />
+                        </span>
+                        <span className="card-text">
+                          <span className="card-name">
+                            {m.name} {m.key ? <kbd>{m.key}</kbd> : null}
+                          </span>
+                          <span className="card-what">{m.what}</span>
+                          <span className="card-others">{m.others}</span>
+                        </span>
+                      </button>
+                      {open ? (
+                        <div className="arrows" role="group" aria-label={`${m.name} direction`}>
+                          {(Object.keys(DIRS) as Dir[]).map((dir) => {
+                            const move = { type: m.type, dir } as BrawlMove;
+                            const on = chosen && "dir" in view.myMove! && view.myMove.dir === dir;
+                            return (
+                              <button
+                                key={dir}
+                                type="button"
+                                className={on ? "arrow on" : "arrow"}
+                                aria-label={`${m.name} ${dir}`}
+                                aria-pressed={on}
+                                onPointerEnter={() => hoverCard(move)}
+                                onPointerLeave={() => hoverCard(null)}
+                                onClick={() => send(move)}
+                              >
+                                {ARROWS[dir]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="lead">
+                {view.myMove ? (
+                  <>
+                    Locked in: <b>{describe(view.myMove)}</b>. You can change it until everyone has picked.
+                  </>
+                ) : (
+                  "Pick a move, then a direction: here or on the glowing tiles. The ghosts show what happens if nobody else moves."
+                )}
+              </p>
+            </Panel>
+          ) : null}
+          {canDrop ? (
+            <Panel className="controls">
+              <p className="lead">
+                {view.myDrop
+                  ? "Your brick falls on the marked tile after everyone moves and shoves. Click another tile to change it."
+                  : "You're out, but not done: click a tile to drop a brick there. It lands after the moves and shoves, so aim where someone will be. A hit dazes them for a turn: +50. Blocking stops it."}
+              </p>
+            </Panel>
+          ) : null}
+          {view.phase === "plan" && mine?.dazed ? (
+            <Panel className="controls">
+              <p className="lead">
+                <Icon name="dizzy" /> A brick landed on your head, so you skip this turn. You can still be shoved, so watch out.
+              </p>
+            </Panel>
+          ) : null}
+          {view.phase === "plan" ? (
+            <p className="tally">
+              Moves in: {view.readyIds.length} / {view.bricks.filter((b) => b.outAt === null && !b.dazed).length}
+              {view.crumbles ? <span className="warn"> · The red edge falls after this turn</span> : null}
+            </p>
+          ) : null}
+          {view.phase === "replay" ? (
+            <Panel className="feed">
+              {story ? <p className="story">{story}</p> : null}
+              <ul>
+                {view.events.flatMap((e, i) => {
+                  const line = eventLine(e, name);
+                  return line ? [<li key={i}>{line}</li>] : [];
+                })}
+                {view.events.every((e) => !eventLine(e, name)) ? <li>Everyone shuffled around. Nobody touched anybody.</li> : null}
+              </ul>
+            </Panel>
+          ) : null}
+          {(view.phase === "results" || view.phase === "done") && view.placing ? (
+            <Panel className="feed">
+              <ol className="placing">
+                {view.placing.map((id, i) => (
+                  <li key={id}>
+                    <span className="place">{i + 1}</span>
+                    {seatOf(players, id) ? <Brick avatar={seatOf(players, id)!.avatar} size="xs" mood={i === 0 ? "happy" : "sad"} /> : null}
+                    <span className="place-name">{name(id)}</span>
+                    <span className="place-pts">+{view.roundPoints[id] ?? 0}</span>
+                  </li>
+                ))}
+              </ol>
+            </Panel>
+          ) : null}
+        </div>
+      </div>
+      {tutorial ? <Tutorial onClose={closeTutorial} /> : null}
+    </div>
+  );
+}
+
+/** The order a turn plays out in, lit up beat by beat during the replay. */
+function TurnOrder({ stage, crumbles }: { stage: number; crumbles: boolean }) {
+  const beats = ["Everyone moves", "Shoves land", "Dropped bricks fall", crumbles ? "Red edge crumbles" : "Edge crumbles (every 3rd turn)"];
+  return (
+    <ol className="order" aria-label="How a turn plays out">
+      {beats.map((b, i) => (
+        <li key={b} className={stage === i ? "beat now" : stage > i ? "beat past" : "beat"}>
+          <span className="beat-num">{i + 1}</span>
+          {b}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function Tutorial({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="tutorial" role="dialog" aria-labelledby="bb-tutorial-title">
+      <Panel pad="lg">
+        <h2 id="bb-tutorial-title" className="tutorial-title">
+          How a brawl turn works
+        </h2>
+        <ol className="tutorial-steps">
+          <li>
+            <b>Everyone picks one move in secret</b>, at the same time. Nobody sees your choice until the replay.
+          </li>
+          <li>
+            <b>All the moves happen at once.</b> Bricks heading for the same tile bounce back. A dash into a brick rams it one tile.
+          </li>
+          <li>
+            <b>Then every shove lands.</b> A shove pushes the brick next to you two tiles, so if you end up next to someone, they can shove you. Blocking stops shoves.
+          </li>
+          <li>
+            <b>Off the edge, you're out</b>, and +150 goes to whoever pushed you. The edge crumbles every third turn, so the arena shrinks.
+          </li>
+        </ol>
+        <Button size="lg" onClick={onClose}>
+          Let's brawl
+        </Button>
+      </Panel>
+    </div>
+  );
+}
+
+/**
+ * The arena: a canvas the renderer draws every frame, plus what screen readers and keyboards need. React renders it
+ * when a new view arrives; the renderer animates everything in between.
+ */
+function Arena({
+  renderer,
+  view,
+  me,
+  players,
+  ...input
+}: Omit<ArenaInput, "view" | "me" | "players"> & {
+  renderer: RefObject<BrawlRenderer | null>;
+  view: BrickBrawlView;
+  me: PlayerId | null;
+  players: Seat[];
+}) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const r = new BrawlRenderer(canvas.current!);
+    renderer.current = r;
+    return () => {
+      r.destroy();
+      renderer.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    renderer.current?.update({ view, me, players, ...input });
+  });
+
+  const n = view.size - 2 * view.ring;
+  const where = (b: BrawlBrick) => `column ${b.x + 1}, row ${b.y + 1}`;
+  const standing = view.bricks.filter((b) => b.outAt === null);
+  const summary = standing.map((b) => `${b.id === me ? "You" : (seatOf(players, b.id)?.name ?? "?")}: ${where(b)}`).join(". ");
+  const tiles: [number, number][] = [];
+  if (input.canDrop) {
+    for (let y = view.ring; y < view.size - view.ring; y++) for (let x = view.ring; x < view.size - view.ring; x++) tiles.push([x, y]);
+  }
+  return (
+    <div className="arena" role="group" aria-label={`Arena, ${n} by ${n} tiles`}>
+      <canvas ref={canvas} className="arena-canvas" aria-hidden="true" />
+      <p className="sr-only">{summary ? `Standing: ${summary}.` : "Nobody is standing."}</p>
+      {tiles.length ? (
+        <div className="sr-only" role="group" aria-label="Drop a brick">
+          {tiles.map(([x, y]) => (
+            <button
+              key={`${x},${y}`}
+              type="button"
+              aria-label={`Drop a brick on column ${x + 1}, row ${y + 1}`}
+              aria-pressed={view.myDrop?.x === x && view.myDrop?.y === y}
+              onFocus={() => renderer.current?.focus({ x, y })}
+              onBlur={() => renderer.current?.focus(null)}
+              onClick={() => input.onDrop(x, y)}
+            >
+              {x + 1},{y + 1}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+<style>
+  .bb { position: relative; display: flex; flex-direction: column; gap: 12px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(280px, 1fr); gap: 20px; align-items: start; }
+
+  .order { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .beat {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 900;
+    font-size: 13px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    padding: 3px 12px 3px 4px;
+    opacity: 0.75;
+    transition: background 0.2s, scale 0.2s, opacity 0.2s;
+  }
+  .beat-num { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; background: var(--sun); border: 2px solid var(--ink); border-radius: 50%; }
+  .beat.now { background: var(--sun); scale: 1.1; opacity: 1; }
+  .beat.past { opacity: 0.45; }
+
+  .arena { position: relative; width: 100%; max-width: min(700px, calc(100dvh - 230px)); aspect-ratio: 1; margin: 0 auto; }
+  .arena-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+
+  .side { display: flex; flex-direction: column; gap: 12px; }
+  .controls { display: flex; flex-direction: column; gap: 10px; }
+  .alert { font-weight: 900; color: var(--paper); background: var(--coral); border: 3px solid var(--ink); border-radius: 12px; padding: 8px 10px; }
+  .cards { display: flex; flex-direction: column; gap: 6px; }
+  .card { border: 3px solid var(--ink); border-radius: 14px; background: var(--paper); overflow: hidden; }
+  .card.open { background: #fff7d6; }
+  .card.chosen { border-color: var(--teal); box-shadow: 0 0 0 3px var(--teal); }
+  .card-head { width: 100%; display: flex; align-items: flex-start; gap: 10px; text-align: left; font: inherit; background: none; border: 0; padding: 7px 10px; cursor: pointer; }
+  .card-icon { font-size: 24px; line-height: 1.2; }
+  .card-text { display: flex; flex-direction: column; }
+  .card-name { font-weight: 900; font-size: 16px; }
+  .card-name kbd { font: inherit; font-size: 10px; font-weight: 800; color: var(--muted); border: 2px solid var(--muted); border-radius: 6px; padding: 0 4px; margin-left: 4px; }
+  .card-what { font-weight: 800; font-size: 14px; }
+  .card-others { font-weight: 700; font-size: 13px; color: var(--muted); }
+  .arrows { display: flex; gap: 6px; padding: 0 10px 8px 44px; }
+  .arrow {
+    width: 42px;
+    height: 36px;
+    font-size: 20px;
+    font-weight: 900;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 10px;
+    box-shadow: 0 3px 0 var(--ink);
+    cursor: pointer;
+  }
+  .arrow.on { background: var(--sun); }
+  .arrow:active { translate: 0 2px; box-shadow: 0 1px 0 var(--ink); }
+  .lead { font-weight: 800; font-size: 14px; }
+  .tally { font-weight: 900; color: var(--muted); }
+  .warn { color: var(--coral-ink); }
+  .feed ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-weight: 800; }
+  .story { font-family: var(--font-display); font-size: 20px; margin-bottom: 8px; }
+  .placing { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .placing li { display: flex; align-items: center; gap: 10px; font-weight: 900; }
+  .place { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; background: var(--sun); border: 3px solid var(--ink); border-radius: 50%; }
+  .place-name { flex-grow: 1; }
+  .place-pts { color: var(--teal-ink); }
+
+  .tutorial { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; background: rgba(27, 31, 59, 0.5); border-radius: var(--radius-lg); padding: 16px; }
+  .tutorial-title { font-family: var(--font-display); font-weight: 400; font-size: 28px; margin-bottom: 10px; }
+  .tutorial-steps { display: flex; flex-direction: column; gap: 8px; margin: 0 0 16px; padding-left: 22px; font-weight: 700; max-width: 520px; }
+
+  @media (width < 900px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    .arena { max-width: 100%; }
+  }
+</style>

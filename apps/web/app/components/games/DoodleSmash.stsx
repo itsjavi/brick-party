@@ -1,0 +1,507 @@
+import {
+  SMASH_POINTS,
+  STAGES,
+  smashSpec,
+  unpackBody,
+  type DoodleSmashView,
+  type MatchView,
+  type PlayerId,
+  type SmashFighterView,
+  type SmashSpec,
+  type StageId,
+  type WeaponKind,
+} from "@brick/game";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { playSfx, type SfxName } from "../../lib/audio";
+import { AVATAR_HEX } from "../../lib/avatar";
+import { clockPaused } from "../../lib/clock";
+import type { RoomFeed } from "../../lib/room";
+import { useChangeSfx } from "../../lib/use-phase-sfx";
+import { useMusic } from "../../lib/use-music";
+import { GameHud } from "../room/GameHud.stsx";
+import { Brick } from "../ui/Brick.stsx";
+import { Icon } from "../ui/Icon.stsx";
+import { Panel } from "../ui/Panel.stsx";
+import { Bars, DrawFighter, Traits, useFigure } from "./doodle/DrawFighter.stsx";
+import { FighterPreview, type FigureSource } from "./doodle/FightArena.stsx";
+import { Arena } from "./smash/Arena.stsx";
+import { useSmashControls } from "./smash/controls";
+import { FightClient } from "./smash/netcode";
+import type { Contender, FightFeed } from "./smash/renderer";
+import { RosterKeeper } from "./smash/roster";
+import { POWER_ICONS, damageColor } from "./smash/scene";
+import { TouchPad } from "./smash/TouchPad.stsx";
+import { seatOf, type GameProps, type Seat } from "./types";
+
+type Phase = DoodleSmashView["phase"];
+
+const PHASE_SFX: Partial<Record<Phase, SfxName>> = { weighin: "whoosh", results: "reveal" };
+
+const TIPS = {
+  weapon: "Optional. Draw it at a hand, then pick what it is: a Blade hits up close (longer reaches further), a Blaster shoots ahead. More ink hits harder. No weapon: fists.",
+  legs: "Start each leg at the body's edge. Longer legs run faster and jump higher. No legs? It still hops along.",
+  body: "Required. One big shape works best: a bigger body is heavier, so hits launch it less far, but it's a bigger target.",
+};
+
+const WEAPON_LABEL: Record<SmashSpec["weapon"], string> = { blade: "Blade", blaster: "Blaster", fists: "Fists" };
+
+function banner(view: DoodleSmashView, me: PlayerId | null, name: (id: PlayerId) => string): string {
+  switch (view.phase) {
+    case "draw":
+      if (me === null) return "The artists are drawing...";
+      return view.submittedIds.includes(me) ? "Your fighter is ready!" : "Draw your fighter!";
+    case "weighin":
+      return "The weigh-in";
+    case "fight":
+      return view.fight && view.fight.over >= 0 ? "Game!" : "Smash!";
+    case "results":
+    case "done": {
+      const top = view.placing?.[0];
+      return top ? (top === me ? "You're the last doodle standing!" : `${name(top)} wins!`) : "That's a wrap";
+    }
+  }
+}
+
+/** A fighter's fight numbers as bars, scaled to what fighters usually get. */
+function SmashSheet({ spec, compact = false }: { spec: SmashSpec; compact?: boolean }) {
+  const bars = [
+    { name: "Weight", value: (spec.weight - 0.8) / 0.85, text: spec.weight.toFixed(2) },
+    { name: "Speed", value: (spec.run - 9) / 9, text: String(spec.run) },
+    { name: "Jump", value: (spec.jump - 22) / 9, text: String(spec.jump) },
+    { name: "Reach", value: spec.weapon === "blaster" ? 1 : spec.reach / 110, text: spec.weapon === "blaster" ? "far" : String(spec.reach) },
+    { name: "Hit", value: (spec.damage - 4) / 11, text: `${spec.damage}%` },
+  ];
+  return (
+    <div className="smash-stats">
+      <Traits traits={[WEAPON_LABEL[spec.weapon], spec.weight >= 1.3 ? "Heavyweight" : spec.weight <= 0.95 ? "Featherweight" : "", spec.run >= 15 ? "Speedy" : "", spec.jump >= 28 ? "Bouncy" : ""]} />
+      <Bars bars={bars} compact={compact} />
+    </div>
+  );
+}
+
+/** A room update's Doodle Smash view, if that's the game it's playing. */
+const smashView = (view: MatchView): DoodleSmashView | null =>
+  view.game?.gameId === "doodle-smash" ? (view.game.view as DoodleSmashView) : null;
+
+/**
+ * The fighters as this screen knows them (`RosterKeeper`), from React's views and, during the fight, from every live
+ * update too: the ones carrying the roster or the drawings come only now and then, and React's view may skip them.
+ */
+function useRoster(view: DoodleSmashView, feed: RoomFeed): SmashFighterView[] {
+  const keeper = useRef<RosterKeeper | null>(null);
+  keeper.current ??= new RosterKeeper();
+  const [, changed] = useReducer((n: number) => n + 1, 0);
+  keeper.current.take(view);
+  const fighting = view.phase === "fight";
+  useEffect(() => {
+    if (!fighting) return;
+    return feed.subscribe((update) => {
+      const v = smashView(update);
+      if (v && keeper.current!.take(v)) changed();
+    });
+  }, [fighting, feed]);
+  return keeper.current.fighters(view.drawingsVersion);
+}
+
+/** Each fighter's drawing as something to draw, worked out once per set of drawings. */
+function useFigures(roster: SmashFighterView[]): (FigureSource | null)[] {
+  const key = roster.map((f) => (f.strokes ? f.id : "")).join("|");
+  return useMemo(() => roster.map((f) => (f.strokes && f.rig && f.stats ? { strokes: f.strokes, rig: f.rig, stats: f.stats } : null)), [key]);
+}
+
+/** Whether this looks like a phone or tablet, which gets on-screen buttons. */
+function useTouch(): boolean {
+  const [touch, setTouch] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(pointer: coarse), (width < 760px)");
+    const update = () => setTouch(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return touch;
+}
+
+export function DoodleSmash({ view, me, players, matchScore, act, feed }: GameProps<DoodleSmashView>) {
+  useMusic(view.phase === "draw" ? "think" : view.phase === "results" || view.phase === "done" ? "reveal" : view.phase === "fight" ? "battle" : "tension");
+  useChangeSfx(view.phase, (p) => PHASE_SFX[p as Phase] ?? null);
+  const name = (id: PlayerId) => (id === me ? "You" : (seatOf(players, id)?.name ?? "?"));
+  const playing = me !== null && players.some((p) => p.id === me);
+  const roster = useRoster(view, feed);
+  const figures = useFigures(roster);
+  const myPoints = me ? (view.points[me] ?? 0) : 0;
+
+  // Joined late or reloaded mid-fight: ask for the drawings, which the fight no longer sends unasked.
+  const missing = view.phase === "fight" && playing && (roster.length === 0 || figures.some((f) => f === null));
+  useEffect(() => {
+    if (!missing) return;
+    act({ type: "drawings" });
+    const id = setInterval(() => act({ type: "drawings" }), 1500);
+    return () => clearInterval(id);
+  }, [missing]);
+
+  // The final standings, as a sound.
+  const heard = useRef(view.phase);
+  useEffect(() => {
+    if (heard.current === view.phase) return;
+    heard.current = view.phase;
+    if (view.phase === "results" && me) playSfx(view.placing?.[0] === me ? "win" : (view.points[me] ?? 0) > 0 ? "point" : "lose");
+  }, [view.phase]);
+
+  return (
+    <div className="ds">
+      <GameHud
+        gameId="doodle-smash"
+        round={view.phase === "draw" ? "Draw your fighter" : view.phase === "weighin" ? "Weigh-in" : view.stage ? STAGES[view.stage].name : "The fight"}
+        banner={banner(view, me, name)}
+        endsAt={view.phase === "done" ? null : view.endsAt}
+        ticks={view.phase === "draw" && playing && !view.submittedIds.includes(me!)}
+        score={matchScore + myPoints}
+      />
+      {view.phase === "draw" ? (
+        playing && !view.submittedIds.includes(me!) ? (
+          <DrawFighter
+            endsAt={view.endsAt}
+            weaponToggle
+            tips={TIPS}
+            ready="Ready to smash!"
+            onSubmit={(strokes, weapon) => act({ type: "fighter", strokes, weapon })}
+            sheet={(fighter, weapon) => <SmashSheet spec={smashSpec(fighter.stats, fighter.rig, weapon)} />}
+          />
+        ) : (
+          <Waiting view={view} me={me} players={players} />
+        )
+      ) : null}
+      {view.phase === "weighin" ? <WeighIn view={view} roster={roster} figures={figures} name={name} /> : null}
+      {view.phase === "fight" ? <Fight view={view} roster={roster} figures={figures} players={players} me={me} act={act} feed={feed} /> : null}
+      {view.phase === "results" || view.phase === "done" ? <Results view={view} roster={roster} figures={figures} players={players} name={name} /> : null}
+    </div>
+  );
+}
+
+function Waiting({ view, me, players }: { view: DoodleSmashView; me: PlayerId | null; players: Seat[] }) {
+  const fighter = useFigure(view.myDrawing?.strokes);
+  return (
+    <div className="waiting">
+      {fighter && view.myDrawing ? (
+        <Panel className="sheet">
+          <h2 className="sheet-title">Your fighter is ready</h2>
+          <div className="sheet-preview">
+            <FighterPreview fighter={fighter} size={240} />
+          </div>
+          <SmashSheet spec={smashSpec(fighter.stats, fighter.rig, view.myDrawing.weapon)} />
+        </Panel>
+      ) : null}
+      <div className="side">
+        <Panel className="who-drew">
+          <p className="lead">{me && view.myDrawing ? "Warming up while the others finish..." : "The artists are drawing their fighters."}</p>
+          <ul className="seats">
+            {players.map((p) => {
+              const done = view.submittedIds.includes(p.id);
+              return (
+                <li key={p.id} className={done ? "seat done" : "seat"}>
+                  <Brick avatar={p.avatar} size="sm" mood={done ? "happy" : "sleepy"} />
+                  <span>{p.id === me ? "You" : p.name}</span>
+                  <span className="seat-state">{done ? "✓ Ready" : "Drawing..."}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </Panel>
+        <Controls />
+      </div>
+    </div>
+  );
+}
+
+/** The keys, for the weigh-in and the waiting room: the "How to play" of the fight itself. */
+function Controls() {
+  const rows: [string[], string][] = [
+    [["←", "→"], "Run"],
+    [["↑"], "Jump, then twice more in the air to recover"],
+    [["↓"], "Drop through a ledge, fall faster"],
+    [["Space"], "Attack the way you hold the arrows"],
+    [["Hold Space"], "Charge, let go for a boosted hit"],
+    [["B", "Shift"], "Shield (weaker with every block in a row)"],
+  ];
+  return (
+    <Panel className="controls" tone="mist">
+      <h3 className="controls-title">How to fight</h3>
+      <dl className="keys">
+        {rows.map(([keys, what]) => (
+          <div key={what} className="key-row">
+            <dt>
+              {keys.map((k) => (
+                <kbd key={k}>{k}</kbd>
+              ))}
+            </dt>
+            <dd>{what}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="controls-note">
+        Fly past the edge and you lose a life. The higher your %, the further hits send you. Power-ups: <Icon name={POWER_ICONS.heal} /> heal, <Icon name={POWER_ICONS.speed} /> speed, <Icon name={POWER_ICONS.power} /> big hit,{" "}
+        <Icon name={POWER_ICONS.shield} /> shield. On a phone, use the buttons.
+      </p>
+    </Panel>
+  );
+}
+
+/** A little picture of a stage's platforms. */
+function StageMap({ stage }: { stage: StageId }) {
+  return (
+    <svg className="stage-map" viewBox="0 0 1600 1000" aria-hidden="true">
+      <rect width="1600" height="1000" fill="#eef6ff" />
+      {STAGES[stage].platforms.map((p, j) => (
+        <rect key={j} x={p.x0} y={1000 - p.y} width={p.x1 - p.x0} height={p.solid ? p.h : 18} rx="8" fill={p.solid ? "#cbd5e1" : p.move ? "#ff8fb1" : "#ffe27a"} stroke="#1b1f3b" strokeWidth="8" />
+      ))}
+    </svg>
+  );
+}
+
+function WeighIn({ view, roster, figures, name }: { view: DoodleSmashView; roster: SmashFighterView[]; figures: (FigureSource | null)[]; name: (id: PlayerId) => string }) {
+  const stage = view.stage ? STAGES[view.stage] : null;
+  return (
+    <div className="weighin">
+      <div className="arena-info">
+        {stage ? (
+          <Panel className="stage-card">
+            <span className="kicker">Today's stage</span>
+            <h3 className="stage-name">{stage.name}</h3>
+            <StageMap stage={stage.id} />
+            <p className="blurb">{stage.blurb}</p>
+          </Panel>
+        ) : null}
+        <Controls />
+      </div>
+      <div className="cards">
+        {roster.map((f, i) => (
+          <div key={f.id} className="deal" style={{ animationDelay: `${i * 0.1}s` }}>
+            <div className={f.id === view.order[view.me] ? "fcard mine" : "fcard"}>
+              <div className="card-art">{figures[i] ? <FighterPreview fighter={figures[i]!} size={160} /> : null}</div>
+              <span className="card-name">{f.name}</span>
+              <span className="card-owner">
+                {name(f.id)}
+                {f.auto ? <span className="auto"> (drawn for them)</span> : null}
+              </span>
+              <SmashSheet spec={f.spec} compact />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Fight({
+  view,
+  roster,
+  figures,
+  players,
+  me,
+  act,
+  feed,
+}: {
+  view: DoodleSmashView;
+  roster: SmashFighterView[];
+  figures: (FigureSource | null)[];
+  players: Seat[];
+  me: PlayerId | null;
+  act: (action: unknown) => void;
+  feed: RoomFeed;
+}) {
+  const fight = view.fight;
+  const stage = view.stage;
+  const index = me !== null ? view.me : -1;
+  const ready = roster.length === view.order.length && fight !== null && stage !== null;
+  const client = useMemo(
+    () => (ready ? new FightClient(index, roster.map((f) => f.spec), stage!) : null),
+    [ready, view.drawingsVersion, index, stage],
+  );
+  // Every update goes straight to the canvas; React's view here comes only a few times a second.
+  const fights = useCallback<FightFeed>(
+    (listener) =>
+      feed.subscribe((update) => {
+        const f = smashView(update)?.fight;
+        if (f) listener(f);
+      }),
+    [feed],
+  );
+  const keys = useSmashControls(
+    !!client && index >= 0,
+    (message) => {
+      // The server holds moves while paused, so keys pressed then would only be lost.
+      if (clockPaused()) return;
+      act(message);
+      client?.sent(message.seq);
+    },
+    (held, attack) => client?.input(held, attack),
+  );
+  const touch = useTouch();
+  const contenders = useMemo<Contender[]>(
+    () =>
+      roster.map((f, i) => {
+        const seat = seatOf(players, f.id);
+        return {
+          name: seat?.name ?? f.name,
+          color: seat ? AVATAR_HEX[seat.avatar.color] : "#94a3b8",
+          spec: f.spec,
+          weapon: f.spec.weapon,
+          figure: figures[i] ?? null,
+          mine: i === index,
+        };
+      }),
+    [roster, figures, players, index],
+  );
+  if (!client || !fight || !stage) return <p className="lead center">Joining the fight...</p>;
+  return (
+    <div className="fight">
+      <Arena client={client} stage={stage} contenders={contenders} fights={fights} me={index} />
+      {index >= 0 && touch ? <TouchPad keys={keys} /> : null}
+      {index >= 0 && !touch ? (
+        <p className="hint">
+          <kbd>←</kbd> <kbd>→</kbd> run · <kbd>↑</kbd> jump · <kbd>↓</kbd> drop · <kbd>Space</kbd> attack, hold to charge · <kbd>B</kbd> or <kbd>Shift</kbd> shield
+        </p>
+      ) : null}
+      {index < 0 ? <p className="hint">You're watching this fight.</p> : null}
+    </div>
+  );
+}
+
+function Results({
+  view,
+  roster,
+  figures,
+  players,
+  name,
+}: {
+  view: DoodleSmashView;
+  roster: SmashFighterView[];
+  figures: (FigureSource | null)[];
+  players: Seat[];
+  name: (id: PlayerId) => string;
+}) {
+  const placing = view.placing ?? [];
+  const champ = placing[0];
+  const at = (id: PlayerId) => view.order.indexOf(id);
+  const champFigure = champ ? figures[at(champ)] : null;
+  const kos = (id: PlayerId) => view.fight?.tally?.[at(id)]?.kos ?? 0;
+  return (
+    <div className="results">
+      {champ ? (
+        <Panel className="champ" tone="sun">
+          <span className="kicker">Last doodle standing</span>
+          {champFigure ? <FighterPreview fighter={champFigure} size={220} /> : null}
+          <span className="champ-name">{roster[at(champ)]?.name ?? name(champ)}</span>
+          <span className="champ-owner">drawn by {name(champ)}</span>
+        </Panel>
+      ) : null}
+      <Panel className="feed">
+        <h3 className="feed-title">Last one standing first</h3>
+        <ol className="lines">
+          {placing.map((id, i) => {
+            const seat = seatOf(players, id);
+            const row = view.fight?.bodies[at(id)];
+            const body = row ? unpackBody(row) : null;
+            const pts = view.points[id] ?? 0;
+            return (
+              <li key={id} className="points-row">
+                <b className="place">{i + 1}.</b>
+                {seat ? <Brick avatar={seat.avatar} size="xs" mood={i === 0 ? "happy" : pts > 0 ? "sly" : "sad"} /> : null}
+                <span className="who">{name(id)}</span>
+                <span className="note">
+                  {kos(id)} KO{kos(id) === 1 ? "" : "s"}
+                  {body ? (body.lives > 0 ? ` · ${body.lives} ${body.lives === 1 ? "life" : "lives"} left` : " · out") : ""}
+                  {body && body.lives > 0 ? <span style={{ color: damageColor(body.dmg) }} className="pct-note"> {Math.round(body.dmg)}%</span> : null}
+                </span>
+                <span className={pts > 0 ? "pts up" : "pts"}>+{pts}</span>
+              </li>
+            );
+          })}
+        </ol>
+        <p className="tally">
+          +{SMASH_POINTS.place.join(", +")} for the top three, +{SMASH_POINTS.ko} per KO.
+        </p>
+      </Panel>
+    </div>
+  );
+}
+
+<style>
+  .ds { display: flex; flex-direction: column; gap: 14px; }
+  .lead { font-weight: 800; font-size: 15px; }
+  .center { text-align: center; }
+  .tally { font-weight: 900; color: var(--muted); font-size: 13px; }
+  .hint { font-weight: 800; font-size: 14px; color: var(--muted); text-align: center; }
+  kbd { font: inherit; font-weight: 900; font-size: 12px; background: var(--paper); border: 2px solid var(--ink); border-bottom-width: 4px; border-radius: 6px; padding: 0 6px; color: var(--ink); }
+
+  .smash-stats { display: flex; flex-direction: column; gap: 8px; }
+  .sheet { display: flex; flex-direction: column; gap: 10px; }
+  .sheet-title { font-family: var(--font-display); font-weight: 400; font-size: 24px; }
+  .sheet-preview { display: flex; justify-content: center; background: #f8fbff; border: 3px dashed #cbd5e1; border-radius: var(--radius-sm); padding: 6px; }
+
+  .waiting { display: flex; flex-wrap: wrap; gap: 18px; justify-content: center; align-items: flex-start; }
+  .waiting .sheet { width: min(100%, 340px); }
+  .side { display: flex; flex-direction: column; gap: 14px; width: min(100%, 420px); }
+  .who-drew { display: flex; flex-direction: column; gap: 10px; }
+  .seats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .seat { display: flex; align-items: center; gap: 10px; font-weight: 900; }
+  .seat-state { margin-left: auto; font-size: 13px; color: var(--muted); }
+  .seat.done .seat-state { color: var(--teal-ink); }
+
+  .controls { display: flex; flex-direction: column; gap: 8px; }
+  .controls-title { font-family: var(--font-display); font-weight: 400; font-size: 20px; }
+  .keys { margin: 0; display: flex; flex-direction: column; gap: 5px; }
+  .key-row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; align-items: center; }
+  .key-row dt { display: flex; gap: 4px; flex-wrap: wrap; }
+  .key-row dd { margin: 0; font-weight: 800; font-size: 14px; }
+  .controls-note { font-weight: 700; font-size: 13px; color: var(--muted); }
+
+  .weighin { display: grid; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .arena-info { display: flex; flex-direction: column; gap: 14px; }
+  .stage-card { display: flex; flex-direction: column; gap: 6px; }
+  .kicker { font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; color: var(--muted); }
+  .stage-name { font-family: var(--font-display); font-weight: 400; font-size: 26px; }
+  .stage-map { display: block; width: 100%; height: auto; border: 3px solid var(--ink); border-radius: var(--radius-sm); }
+  .blurb { font-weight: 800; font-size: 14px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .deal { animation: deal 0.45s cubic-bezier(0.2, 1.5, 0.4, 1) both; }
+  .fcard {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--lift-sm);
+    padding: 8px 10px 10px;
+  }
+  .fcard.mine { background: #effdfb; box-shadow: 0 0 0 4px var(--sun), var(--lift-sm); }
+  .card-art { display: flex; justify-content: center; background: #f8fbff; border-radius: var(--radius-sm); min-height: 100px; }
+  .card-name { font-family: var(--font-display); font-size: 19px; line-height: 1.1; }
+  .card-owner { font-weight: 800; font-size: 13px; color: var(--muted); }
+  .auto { font-weight: 700; }
+
+  .fight { display: flex; flex-direction: column; gap: 10px; }
+
+  .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; align-items: start; }
+  .champ { display: flex; flex-direction: column; align-items: center; gap: 4px; animation: deal 0.6s cubic-bezier(0.2, 1.6, 0.4, 1) both; }
+  .champ-name { font-family: var(--font-display); font-size: 28px; text-align: center; }
+  .champ-owner { font-weight: 800; }
+  .feed { display: flex; flex-direction: column; gap: 8px; }
+  .feed-title { font-family: var(--font-display); font-weight: 400; font-size: 20px; }
+  .lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-weight: 800; }
+  .points-row { display: flex; align-items: center; gap: 8px; }
+  .place { min-width: 22px; }
+  .who { font-weight: 900; }
+  .note { flex-grow: 1; font-size: 13px; color: var(--muted); }
+  .pct-note { font-weight: 900; -webkit-text-stroke: 0.5px var(--ink); }
+  .pts { font-weight: 900; }
+  .pts.up { color: var(--teal-ink); }
+
+  @keyframes deal { from { opacity: 0; translate: 0 30px; rotate: -4deg; } }
+
+  @media (width < 900px) {
+    .weighin { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>

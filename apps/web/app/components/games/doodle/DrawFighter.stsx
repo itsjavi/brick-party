@@ -1,0 +1,304 @@
+import {
+  DOODLE_LIMITS,
+  fighterRig,
+  fighterStats,
+  styleLine,
+  type FighterStats,
+  type Stroke,
+  type StrokePart,
+  type WeaponKind,
+} from "@brick/game";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { playSfx } from "../../../lib/audio";
+import { useCountdown } from "../../../lib/clock";
+import type { IconName } from "../../../lib/icons";
+import { Button } from "../../ui/Button.stsx";
+import { Icon } from "../../ui/Icon.stsx";
+import { Panel } from "../../ui/Panel.stsx";
+import { DrawingCanvas } from "../skip-logic/DrawingCanvas.stsx";
+import { packStrokes, type LocalStroke } from "../skip-logic/simplify";
+import { FighterPreview, type FigureSource } from "./FightArena.stsx";
+
+/**
+ * Drawing a fighter part by part, shared by Doodle Champions and Doodle Smash: a tab per part (the other parts fade
+ * while you draw one), a live preview that walks and swings, and the stats the shapes make.
+ */
+
+/** The parts a fighter is drawn in, with what each does to its stats. */
+const PARTS: { id: StrokePart; icon: IconName; name: string; tip: string }[] = [
+  { id: "body", icon: "body", name: "Body", tip: "Required. One big shape works best: a bigger body has more health and shrugs off hits, but moves slower. Round bodies roll, tall ones topple." },
+  { id: "legs", icon: "leg", name: "Legs", tip: "Start each leg at the body's edge. More legs and longer legs are faster. No legs? It rolls, hops or slides." },
+  { id: "arms", icon: "arm", name: "Arms", tip: "Start each arm at the body. Longer arms reach further, more arms hit more often. No arms: it headbutts." },
+  { id: "weapon", icon: "sword", name: "Weapon", tip: "Optional. Draw it at a hand. More ink hits harder; a longer weapon reaches further but swings slower." },
+];
+
+/** Stat bars, scaled to what fighters usually have. */
+const BARS: { name: string; value: (s: FighterStats) => number; text: (s: FighterStats) => string }[] = [
+  { name: "Health", value: (s) => (s.hp - 70) / 150, text: (s) => String(s.hp) },
+  { name: "Speed", value: (s) => (s.speed - 2) / 20, text: (s) => String(s.speed) },
+  { name: "Reach", value: (s) => s.reach / 160, text: (s) => String(s.reach) },
+  { name: "Hit", value: (s) => (s.damage - 8) / 34, text: (s) => String(Math.round(s.damage)) },
+  { name: "Attacks", value: (s) => (19 - s.cooldown) / 15, text: (s) => `${(10 / s.cooldown).toFixed(1)}/s` },
+];
+
+const isBody = (s: { t?: StrokePart }) => (s.t ?? "body") === "body";
+
+/** Sends once when the visible timer runs out. */
+export function useAutoSubmit(endsAt: number, submit: () => void) {
+  const { seconds } = useCountdown(endsAt);
+  const fired = useRef(false);
+  useEffect(() => {
+    if (seconds === 0 && !fired.current) {
+      fired.current = true;
+      submit();
+    }
+  });
+}
+
+/** A fighter worked out from strokes, for the preview and the stats. */
+export function useFigure(strokes: Stroke[] | null | undefined): FigureSource | null {
+  return useMemo(() => {
+    if (!strokes?.some(isBody)) return null;
+    const rig = fighterRig(strokes);
+    return { strokes, rig, stats: fighterStats(strokes, rig) };
+  }, [strokes]);
+}
+
+export interface DrawFighterProps {
+  endsAt: number;
+  onSubmit: (strokes: Stroke[], weapon: WeaponKind) => void;
+  /** Doodle Smash: a Blade / Blaster switch on the Weapon tab. */
+  weaponToggle?: boolean;
+  /** Tips that replace the usual ones, by part. */
+  tips?: Partial<Record<StrokePart, string>>;
+  /** What goes under the preview; Doodle Champions' stat sheet when left out. */
+  sheet?: (fighter: FigureSource, weapon: WeaponKind) => ReactNode;
+  /** The submit button's words. */
+  ready?: string;
+  /** A drawing to start from instead of a blank canvas (the dev pages load saved and random fighters). */
+  initialStrokes?: LocalStroke[];
+  initialWeapon?: WeaponKind;
+  /** Hears every change to the drawing or the weapon, such as to keep it between visits. */
+  onChange?: (strokes: LocalStroke[], weapon: WeaponKind) => void;
+}
+
+/** The canvas with a tab per part: the other parts fade while you draw one, and the stats update as you go. */
+export function DrawFighter({
+  endsAt,
+  onSubmit,
+  weaponToggle = false,
+  tips,
+  sheet,
+  ready = "Ready to fight!",
+  initialStrokes,
+  initialWeapon = "blade",
+  onChange,
+}: DrawFighterProps) {
+  const [strokes, setStrokes] = useState<LocalStroke[]>(() => initialStrokes ?? []);
+  const [part, setPart] = useState<StrokePart>("body");
+  const [weapon, setWeapon] = useState<WeaponKind>(initialWeapon);
+  const changed = useRef(onChange);
+  changed.current = onChange;
+  useEffect(() => changed.current?.(strokes, weapon), [strokes, weapon]);
+  const pending = useRef<LocalStroke | null>(null);
+  const latest = useRef({ strokes, weapon });
+  latest.current = { strokes, weapon };
+  const partRef = useRef(part);
+  partRef.current = part;
+  const sent = useRef(false);
+
+  const submit = () => {
+    if (sent.current) return;
+    const all = pending.current ? [...latest.current.strokes, { ...pending.current, t: partRef.current }] : latest.current.strokes;
+    sent.current = true;
+    // Nothing drawn: the game draws a fighter for you.
+    if (!all.length) return;
+    onSubmit(packStrokes(all, DOODLE_LIMITS), latest.current.weapon);
+  };
+  useAutoSubmit(endsAt, submit);
+
+  const commit = useCallback((stroke: LocalStroke) => setStrokes((s) => [...s, { ...stroke, t: partRef.current }]), []);
+  const undo = useCallback(() => {
+    setStrokes((s) => {
+      const at = s.findLastIndex((x) => x.t === partRef.current);
+      return at === -1 ? s : [...s.slice(0, at), ...s.slice(at + 1)];
+    });
+  }, []);
+  const clear = useCallback(() => setStrokes((s) => s.filter((x) => x.t !== partRef.current)), []);
+
+  const packed = useMemo(() => packStrokes(strokes, DOODLE_LIMITS), [strokes]);
+  const fighter = useFigure(packed);
+  const hasBody = fighter !== null;
+  // Legs and arms count as limbs once there's a body to join; strokes before that.
+  const count = (id: StrokePart) =>
+    fighter && id === "legs" ? fighter.stats.legs : fighter && id === "arms" ? fighter.stats.arms : strokes.filter((s) => s.t === id).length;
+  const tab = PARTS.find((p) => p.id === part)!;
+
+  return (
+    <div className="draw">
+      <div className="easel-col">
+        <div className="parts" role="tablist" aria-label="Fighter part">
+          {PARTS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              role="tab"
+              aria-selected={part === p.id}
+              className={part === p.id ? "part on" : "part"}
+              onClick={() => {
+                playSfx("click");
+                setPart(p.id);
+              }}
+            >
+              <Icon name={p.icon} /> {p.name}
+              <span className="part-count">{p.id === "body" && !count("body") ? "needed" : count(p.id)}</span>
+            </button>
+          ))}
+        </div>
+        {weaponToggle && part === "weapon" ? (
+          <div className="kinds" role="radiogroup" aria-label="Weapon kind">
+            {(
+              [
+                ["blade", "sword", "Blade", "hits up close"],
+                ["blaster", "blaster", "Blaster", "shoots ahead"],
+              ] as const
+            ).map(([id, icon, name, what]) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={weapon === id}
+                className={weapon === id ? "kind on" : "kind"}
+                onClick={() => {
+                  playSfx("pop");
+                  setWeapon(id);
+                }}
+              >
+                <Icon name={icon} /> {name} <small>{what}</small>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <p className="tip">{tips?.[part] ?? tab.tip}</p>
+        <DrawingCanvas
+          strokes={strokes}
+          onCommit={commit}
+          onUndo={undo}
+          onClear={clear}
+          pendingRef={pending}
+          faded={(s) => s.t !== part}
+          guide={<line x1="0" y1="930" x2="1000" y2="930" stroke="#cbd5e1" strokeWidth="6" strokeDasharray="18 14" />}
+          actions={
+            <Button size="lg" quiet disabled={!hasBody} onClick={submit} title={hasBody ? undefined : "Draw a body first"}>
+              {ready}
+            </Button>
+          }
+        />
+      </div>
+      <Panel className="sheet">
+        <h2 className="sheet-title">Your fighter</h2>
+        {fighter ? (
+          <>
+            <div className="sheet-preview">
+              <FighterPreview fighter={fighter} size={240} />
+            </div>
+            {sheet ? sheet(fighter, weapon) : <StatSheet stats={fighter.stats} />}
+          </>
+        ) : (
+          <p className="sheet-empty">Start with the body. Your fighter comes to life here as you draw.</p>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+/** Stat bars with a label and a number each; `value` is 0 to 1. */
+export function Bars({ bars, compact = false }: { bars: { name: string; value: number; text: string }[]; compact?: boolean }) {
+  return (
+    <dl className={compact ? "stat-bars compact" : "stat-bars"}>
+      {bars.map((b) => (
+        <div key={b.name} className="stat">
+          <dt>{b.name}</dt>
+          <dd>
+            <span className="stat-track">
+              <span className="stat-fill" style={{ width: `${Math.round(Math.max(0.05, Math.min(1, b.value)) * 100)}%` }} />
+            </span>
+            <span className="stat-num">{b.text}</span>
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** Little labels for what a fighter is like. */
+export function Traits({ traits }: { traits: string[] }) {
+  return (
+    <ul className="traits">
+      {traits.filter(Boolean).map((t) => (
+        <li key={t}>{t}</li>
+      ))}
+    </ul>
+  );
+}
+
+/** Doodle Champions' stats: how it moves, its gear, and bars for health, speed, reach, hits and attacks. */
+export function StatSheet({ stats, compact = false }: { stats: FighterStats; compact?: boolean }) {
+  const traits = [styleLine(stats), stats.arms ? `${stats.arms} arm${stats.arms > 1 ? "s" : ""}` : "No arms", stats.weaponInk ? "Armed" : "", stats.topples ? "Topples" : "", stats.noodle ? "Noodle" : ""];
+  return (
+    <div className="stats">
+      <Traits traits={traits} />
+      <Bars bars={BARS.map((b) => ({ name: b.name, value: b.value(stats), text: b.text(stats) }))} compact={compact} />
+    </div>
+  );
+}
+
+<style>
+  .draw { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, 1fr); gap: 18px; align-items: start; }
+  .easel-col { display: flex; flex-direction: column; gap: 8px; align-items: center; min-width: 0; }
+  .parts, .kinds { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+  .part, .kind {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font: inherit;
+    font-weight: 900;
+    font-size: 15px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    box-shadow: 0 3px 0 var(--ink);
+    padding: 5px 12px;
+    cursor: pointer;
+  }
+  .part.on { background: var(--sun); translate: 0 -2px; }
+  .kind { font-size: 14px; padding: 3px 12px; background: var(--mist); }
+  .kind small { font-weight: 800; color: var(--muted); }
+  .kind.on { background: var(--teal); translate: 0 -2px; }
+  .kind.on small { color: var(--ink); }
+  .part-count { font-size: 12px; background: var(--ink); color: var(--paper); border-radius: 999px; padding: 0 7px; }
+  .tip { font-weight: 700; font-size: 14px; color: var(--muted); text-align: center; max-width: 560px; min-height: 38px; }
+
+  .sheet { display: flex; flex-direction: column; gap: 10px; }
+  .sheet-title { font-family: var(--font-display); font-weight: 400; font-size: 24px; }
+  .sheet-preview { display: flex; justify-content: center; background: #f8fbff; border: 3px dashed #cbd5e1; border-radius: var(--radius-sm); padding: 6px; }
+  .sheet-empty { font-weight: 800; color: var(--muted); padding: 30px 6px; text-align: center; }
+
+  .stats { display: flex; flex-direction: column; gap: 8px; }
+  .traits { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+  .traits li { font-weight: 900; font-size: 12px; background: var(--mist); border: 2px solid var(--ink); border-radius: 999px; padding: 0 8px; }
+  .stat-bars { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+  .stat { display: grid; grid-template-columns: 62px 1fr; align-items: center; gap: 8px; }
+  .stat dt { font-weight: 900; font-size: 13px; }
+  .stat dd { margin: 0; display: flex; align-items: center; gap: 6px; }
+  .stat-track { flex-grow: 1; height: 10px; background: #e2e8f0; border: 2px solid var(--ink); border-radius: 999px; overflow: hidden; }
+  .stat-fill { display: block; height: 100%; background: var(--teal); transition: width 0.3s; }
+  .stat-num { font-weight: 900; font-size: 12px; min-width: 38px; text-align: right; }
+  .compact .stat { grid-template-columns: 52px 1fr; }
+  .compact .stat dt { font-size: 11px; }
+  .compact .stat-track { height: 8px; }
+
+  @media (width < 900px) {
+    .draw { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>
